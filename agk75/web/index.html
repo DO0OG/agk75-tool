@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AGK75</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="3"/><path d="M6 10h2M11 10h2M16 10h2M7 14h10"/></svg><b>AGK75</b></div>
+  <div class="conn" id="conn"><i class="dot"></i><span data-i18n="conn.checking"></span></div>
+  <div class="rev" id="rev"></div>
+  <div class="spacer"></div>
+  <div class="profile"><div class="seg" id="lang"></div></div>
+  <div class="profile"><span data-i18n="top.profile"></span><div class="seg" id="profile"></div></div>
+</header>
+<div class="body">
+  <nav class="side" id="nav"></nav>
+  <main>
+    <section class="card stage" id="stage"><div id="kb" class="kb"></div><div id="legend" class="legend"></div></section>
+    <aside class="card panel" id="panel"></aside>
+  </main>
+</div>
+<div id="banner" class="banner" hidden></div>
+<div id="toasts" class="toasts"></div>
+<script src="i18n.js"></script>
+<script src="layout.js"></script>
+<script src="app.js"></script>
+<script src="keys.js"></script>
+<script src="light.js"></script>
+<script src="magnet.js"></script>
+<script src="misc.js"></script>
+<script>A.start();</script>
+</body>
+</html>
