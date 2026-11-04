@@ -5,4 +5,3 @@ dist/
 *.pyc
 build/
 factory_*.json
-server.txt

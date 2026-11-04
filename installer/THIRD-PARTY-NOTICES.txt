@@ -1,0 +1,25 @@
+AGK75 Tool - third-party software
+
+1. PySide6 (Qt for Python) and Qt 6
+   Used under the GNU Lesser General Public License v3 (LGPLv3).
+   Components in this program: QtCore, QtGui, QtWidgets, QtSvg (PySide6-Essentials) and shiboken6.
+   The Qt libraries are shipped as separate DLL files next to AGK75Tool.exe (for example Qt6Core.dll,
+   Qt6Gui.dll, Qt6Widgets.dll and the PySide6 folder), so you can replace them with your own build of
+   the same version.
+   Source code and license texts:
+     https://code.qt.io/cgit/pyside/pyside-setup.git/
+     https://download.qt.io/official_releases/qt/
+     https://www.gnu.org/licenses/lgpl-3.0.html
+   AGK75 Tool is not affiliated with The Qt Company.
+
+2. hidapi (Python binding "hid")
+   Used under the BSD license option.
+
+3. CPython and the Python standard library
+   Python Software Foundation License.
+
+4. hidusbf (SweetLow)
+   Not included in this installer. It is downloaded only when you use the polling rate change feature
+   (public domain binaries, https://github.com/LordOfMice/hidusbf).
+
+AGK75 Tool itself is released under the MIT License (LICENSE).

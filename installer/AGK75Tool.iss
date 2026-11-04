@@ -1,6 +1,6 @@
 ; AGK75 Tool Windows 설치 프로그램 (Inno Setup 6)
 ;
-; 빌드 (agk75-tool 폴더에서, build_exe.py 를 먼저 실행):
+; 빌드 (agk75-tool 폴더에서, build_exe.py 를 먼저 실행. PySide6 의 Qt DLL 은 BuildDir 안에 그대로 들어 있어 교체할 수 있다):
 ;   ISCC installer\AGK75Tool.iss
 ; 백업 파일은 %AppData%\AGK75Tool\backups 에 저장되므로 제거해도 남는다.
 
@@ -47,6 +47,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\AGK75 Tool"; Filename: "{app}\AGK75Tool.exe"

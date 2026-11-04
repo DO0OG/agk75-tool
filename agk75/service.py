@@ -1,21 +1,16 @@
-"""설정 화면용 로컬 서버: agk75/web 정적 파일 + JSON API. 표준 라이브러리만 쓴다."""
+"""장치·백업·폴링레이트 로직. 화면과 무관한 일반 메서드로만 이루어지며 표준 라이브러리만 쓴다."""
 import fnmatch
 import json
 import os
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
 
 from . import i18n
 from . import protocol as P
 from . import ratectl, usbinfo
 from .i18n import MsgError, t
 
-WEB = Path(__file__).parent / "web"
-TYPES = {".html": "text/html", ".css": "text/css", ".js": "application/javascript",
-         ".svg": "image/svg+xml", ".json": "application/json"}
 MAG_NUM = ("travel", "lift", "dead", "rt_press", "rt_lift")
 MAG_RANGE = {"travel": (0.1, 3.5), "lift": (0.1, 3.5), "dead": (0.0, 1.0),
              "rt_press": (0.1, 2.0), "rt_lift": (0.1, 2.0)}
@@ -30,15 +25,16 @@ def data_dir(sub=""):
     return Path(".")
 
 
-class Hub:
-    """장치 한 개를 한 번에 하나의 요청만 쓰게 묶는다."""
+class Service:
+    """장치 한 개를 한 번에 하나의 작업만 쓰게 묶고, 화면이 부르는 작업을 메서드로 내놓는다."""
 
     def __init__(self, opener=P.Device, backup_dir=None, factory_dir=None):
         self.opener, self.backup_dir = opener, Path(backup_dir) if backup_dir else data_dir("backups")
         self.factory_dir = Path(factory_dir) if factory_dir else data_dir()
         self.dev, self.lock = None, threading.Lock()
-        self.beat = None  # 마지막 heartbeat 의 monotonic 시각
         self.progress = {"n": 0, "total": 0, "running": False}
+        self.on_progress = None  # (n, total) 를 받는 함수: 전체 적용 진행 알림
+        self.on_step = None  # 폴링레이트 진행 문구 키를 받는 함수
         self.measure = None  # 폴링레이트 측정기(처음 쓸 때 만든다)
         self.rate = {"running": False, "step": ""}  # PC 쪽 폴링레이트 변경 진행 상황
         self.rate_lock = threading.Lock()
@@ -66,6 +62,106 @@ class Hub:
     def close(self):
         with self.lock:
             self.drop()
+
+    def step(self, key):
+        self.rate["step"] = key
+        if self.on_step:
+            self.on_step(key)
+
+    def _call(self, fn, body, needs_dev=True):
+        if not needs_dev:
+            return fn(self, None, body)
+        with self.lock:
+            try:
+                return fn(self, self.device(), body)
+            except OSError:
+                self.drop()  # 다음 작업에서 다시 연결을 시도한다
+                raise
+
+    # ---- 장치 읽기·쓰기(모두 입력을 검사하고 되읽어 판정한다) ----
+    def state(self):
+        return self._call(h_state, {})
+
+    def profile(self, **body):
+        return self._call(h_profile, body)
+
+    def debounce(self, **body):
+        return self._call(h_debounce, body)
+
+    def light(self, **body):
+        return self._call(h_light, body)
+
+    def sidelight(self, **body):
+        return self._call(h_sidelight, body)
+
+    def key(self, **body):
+        return self._call(h_key, body)
+
+    def fn(self, **body):
+        return self._call(h_fn, body)
+
+    def options(self, **body):
+        return self._call(h_options, body)
+
+    def magnet(self, **body):
+        return self._call(h_magnet, body)
+
+    def magnet_all(self, **body):
+        return self._call(h_magnet_all, body)
+
+    def backup(self, **body):
+        return self._call(h_backup, body)
+
+    def restore(self, **body):
+        return self._call(h_restore, body)
+
+    # ---- 장치가 필요 없는 작업 ----
+    def backups(self):
+        return self._call(h_backups, {}, False)
+
+    def measure_start(self, **body):
+        return self._call(h_measure_start, body, False)
+
+    def measure_status(self):
+        return self._call(h_measure_status, {}, False)
+
+    def usbinfo(self):
+        return _usb()
+
+    def rate_state(self):
+        return self._call(h_rate_state, {}, False)
+
+    def rate_prepare(self):
+        return self._call(h_rate_prepare, {}, False)
+
+    def rate_set(self, **body):
+        return self._call(h_rate_set, body, False)
+
+    def rate_reset(self):
+        return self._call(h_rate_reset, {}, False)
+
+    def poll(self):
+        """연결 여부는 장치 쓰기 중이 아닐 때만 가볍게 읽어(프로필) 확인한다."""
+        if not self.lock.acquire(blocking=False):
+            return {"connected": self.dev is not None}
+        try:
+            return {"connected": True, "profile": self.device().get_profile()}
+        except OSError:
+            self.drop()
+            return {"connected": False}
+        finally:
+            self.lock.release()
+
+
+def describe_error(exc):
+    """작업 중 올라온 예외 -> 하단 토스트에 보여 줄 현재 언어 문구."""
+    if isinstance(exc, NotImplementedError):
+        return str(exc)
+    if isinstance(exc, ValueError):
+        return i18n.msg(exc)
+    if isinstance(exc, OSError):
+        return t("err.device", reason=exc)
+    return "%s: %s" % (type(exc).__name__, exc)
 
 
 # ---------- 입력 검사 ----------
@@ -172,7 +268,7 @@ def _light_result(got, want, side=False):
     return {"applied": ok, "light" if not side else "sidelight": got}
 
 
-# ---------- API 핸들러: (hub, dev, body) -> dict ----------
+# ---------- 작업 본체: (service, dev, body) -> dict ----------
 def h_state(hub, dev, body):
     t = {k: dev.get_magnet(k) for k in (P.M_TRAVEL, P.M_LIFT, P.M_DEAD, P.M_MODE, P.M_RT_PRESS, P.M_RT_LIFT)}
     magnet = {i: {"travel": P.byte_to_mm(t[P.M_TRAVEL][i]), "lift": P.byte_to_mm(t[P.M_LIFT][i]),
@@ -298,13 +394,11 @@ def h_magnet_all(hub, dev, body):
             if not _mag_ok(dev.set_magnet(i, **kw), kw):
                 bad.append(i)
             hub.progress["n"] = i + 1
+            if hub.on_progress:
+                hub.on_progress(i + 1, P.KEYS)
     finally:
         hub.progress["running"] = False
     return {"applied": not bad, "failed": bad, "magnet": kw}
-
-
-def h_progress(hub, dev, body):
-    return dict(hub.progress)
 
 
 def h_backup(hub, dev, body):
@@ -357,15 +451,12 @@ def h_measure_status(hub, dev, body):
     return st
 
 
-def h_usbinfo(hub, dev, body):
-    return _usb()
-
-
 def _rate_job(hub, step, fn):
-    """폴링레이트 작업은 한 번에 하나만 돌린다. 진행 문구는 /api/rate/progress 로 읽는다."""
+    """폴링레이트 작업은 한 번에 하나만 돌린다. 진행 문구는 hub.on_step 으로 알린다."""
     if not hub.rate_lock.acquire(blocking=False):
         raise MsgError("err.rate_busy")
-    hub.rate = {"running": True, "step": step}
+    hub.rate["running"] = True
+    hub.step(step)
     try:
         if ratectl.admin_pending(hub.rate_pending):
             raise MsgError("err.admin_busy")
@@ -382,10 +473,10 @@ def _rate_apply(hub, hz):
         with hub.lock:
             hub.drop()  # 장치를 재시작하면 열어 둔 핸들이 무효가 된다
             if ops:
-                hub.rate["step"] = "rate.step.admin"
+                hub.step("rate.step.admin")
                 res = ratectl.run_admin(ops)
                 hub.rate_pending = res.get("pending")
-                hub.rate["step"] = "rate.step.wait"
+                hub.step("rate.step.wait")
                 usb = ratectl.reread_usb()
             else:
                 res, usb = {"ok": True, "ops": []}, usbinfo.read()
@@ -418,130 +509,3 @@ def h_rate_reset(hub, dev, body):
     return _rate_apply(hub, 8000)
 
 
-def h_rate_progress(hub, dev, body):
-    return {**hub.rate, "step": t(hub.rate["step"])}
-
-
-def h_heartbeat(hub, dev, body):
-    """연결 여부는 장치 쓰기 중이 아닐 때만 가볍게 읽어(프로필) 확인한다."""
-    hub.beat = time.monotonic()
-    if not hub.lock.acquire(blocking=False):
-        return {"connected": hub.dev is not None}
-    try:
-        profile = hub.device().get_profile()
-        return {"connected": True, "profile": profile}
-    except OSError:
-        hub.drop()
-        return {"connected": False}
-    finally:
-        hub.lock.release()
-
-
-# 경로 -> (핸들러, 장치 필요 여부)
-ROUTES = {("GET", "/api/state"): (h_state, True), ("POST", "/api/profile"): (h_profile, True),
-          ("POST", "/api/debounce"): (h_debounce, True), ("POST", "/api/light"): (h_light, True),
-          ("POST", "/api/sidelight"): (h_sidelight, True), ("POST", "/api/key"): (h_key, True),
-          ("POST", "/api/options"): (h_options, True), ("POST", "/api/restore"): (h_restore, True),
-          ("POST", "/api/measure/start"): (h_measure_start, False),
-          ("GET", "/api/measure/status"): (h_measure_status, False),
-          ("POST", "/api/fn"): (h_fn, True), ("POST", "/api/magnet"): (h_magnet, True),
-          ("POST", "/api/magnet_all"): (h_magnet_all, True), ("GET", "/api/progress"): (h_progress, False),
-          ("POST", "/api/backup"): (h_backup, True), ("GET", "/api/backups"): (h_backups, False),
-          ("GET", "/api/heartbeat"): (h_heartbeat, False),
-          ("GET", "/api/usbinfo"): (h_usbinfo, False),
-          ("GET", "/api/rate/state"): (h_rate_state, False), ("POST", "/api/rate/prepare"): (h_rate_prepare, False),
-          ("POST", "/api/rate/set"): (h_rate_set, False), ("POST", "/api/rate/reset"): (h_rate_reset, False),
-          ("GET", "/api/rate/progress"): (h_rate_progress, False)}
-
-
-def handle(hub, method, path, body=None, lang=None):
-    """-> (HTTP 상태, 응답 dict). 소켓과 무관해서 단위 테스트에서 바로 부른다. lang = X-Lang 값(기본 ko)."""
-    with i18n.use(lang):
-        return _handle(hub, method, path, body)
-
-
-def _handle(hub, method, path, body):
-    route = ROUTES.get((method, path))
-    if route is None:
-        return 404, {"ok": False, "error": t("err.not_found", path=path)}
-    fn, needs_dev = route
-    body = body if body is not None else {}
-    try:
-        if not needs_dev:
-            return 200, {"ok": True, **fn(hub, None, body)}
-        with hub.lock:
-            try:
-                return 200, {"ok": True, **fn(hub, hub.device(), body)}
-            except OSError:
-                hub.drop()  # 다음 요청에서 다시 연결을 시도한다
-                raise
-    except NotImplementedError as e:
-        return 501, {"ok": False, "error": str(e)}
-    except ValueError as e:
-        return 400, {"ok": False, "error": i18n.msg(e)}
-    except OSError as e:
-        return 503, {"ok": False, "connected": False, "error": t("err.device", reason=e)}
-    except Exception as e:  # 예기치 못한 오류도 화면에 그대로 보여 준다
-        return 500, {"ok": False, "error": "%s: %s" % (type(e).__name__, e)}
-
-
-def json_content_type(value):
-    """application/json 만 허용한다(뒤에는 charset 파라미터만 올 수 있다)."""
-    mime, *params = [x.strip().lower() for x in value.split(";")]
-    return mime == "application/json" and all(x.startswith("charset=") for x in params)
-
-
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *args):
-        pass
-
-    def _send(self, status, data, ctype="application/json"):
-        if isinstance(data, dict):
-            data = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", ctype + "; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _host_ok(self):  # 다른 사이트가 DNS 로 이 서버를 가리켜 장치를 쓰는 것을 막는다
-        return self.headers.get("Host", "").split(":")[0] in ("127.0.0.1", "localhost")
-
-    def _api(self, method, body):
-        path = urlparse(self.path).path
-        self._send(*handle(self.server.hub, method, path, body, self.headers.get("X-Lang")))
-
-    def _deny(self, status, key):
-        with i18n.use(self.headers.get("X-Lang")):
-            self._send(status, {"ok": False, "error": t(key)})
-
-    def do_GET(self):
-        if not self._host_ok():
-            return self._deny(403, "err.host")
-        path = urlparse(self.path).path
-        if path.startswith("/api/"):
-            return self._api("GET", None)
-        f = (WEB / ("index.html" if path == "/" else path.lstrip("/"))).resolve()
-        if WEB.resolve() not in f.parents or not f.is_file():
-            return self._send(404, b"not found", "text/plain")
-        self._send(200, f.read_bytes(), TYPES.get(f.suffix, "application/octet-stream"))
-
-    def do_POST(self):
-        # application/json 만 받는다: 다른 사이트의 단순 폼 POST 로는 장치를 쓸 수 없다
-        if not self._host_ok() or not json_content_type(self.headers.get("Content-Type", "")):
-            return self._deny(403, "err.request")
-        try:
-            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
-            if not isinstance(body, dict):
-                raise ValueError
-        except ValueError:
-            return self._deny(400, "err.body")
-        self._api("POST", body)
-
-
-def make_server(hub, port=0):
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    srv.hub = hub
-    srv.daemon_threads = True
-    return srv

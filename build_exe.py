@@ -3,6 +3,7 @@ Nuitka EXE 빌드 스크립트
 실행: python build_exe.py           # 증분 빌드
 실행: python build_exe.py --clean   # dist 삭제 후 클린 빌드
 출력: dist/AGK75Tool.dist/AGK75Tool.exe
+필요: pip install PySide6-Essentials (QtCore·QtGui·QtWidgets·QtSvg 만 쓴다)
 """
 import importlib.util
 import multiprocessing
@@ -22,13 +23,25 @@ if importlib.util.find_spec("nuitka") is None:
 if "--clean" in sys.argv and os.path.isdir("dist"):
     shutil.rmtree("dist")
 
+# 쓰지 않는 Qt 모듈은 따라가지 않아 크기를 줄인다(화면은 QtCore·QtGui·QtWidgets·QtSvg 만 쓴다)
+UNUSED_QT = ["Qt3D*", "QtBluetooth", "QtCharts", "QtConcurrent", "QtDataVisualization", "QtDesigner", "QtHelp",
+             "QtLocation", "QtMultimedia*", "QtNetwork*", "QtNfc", "QtOpenGL*", "QtPdf*", "QtPositioning",
+             "QtPrintSupport", "QtQml", "QtQuick*", "QtRemoteObjects", "QtScxml", "QtSensors", "QtSerialPort",
+             "QtSql", "QtStateMachine", "QtTest", "QtTextToSpeech", "QtUiTools", "QtWebChannel", "QtWebEngine*",
+             "QtWebSockets", "QtWebView", "QtXml"]
+
 args = [
     sys.executable, "-m", "nuitka",
     "--standalone",
     f"--jobs={multiprocessing.cpu_count()}",
     "--windows-console-mode=disable",
     "--windows-icon-from-ico=icon.ico",
-    "--include-data-dir=agk75/web=agk75/web",
+    "--enable-plugin=pyside6",
+    "--include-qt-plugins=platforms,styles,imageformats",  # 창(windows)·시험용(offscreen) 플랫폼, 기본 스타일, 아이콘(ico) 읽기
+    "--include-data-files=icon.ico=icon.ico",  # 창 아이콘
+    "--noinclude-dlls=opengl32sw.dll",  # 소프트웨어 OpenGL(약 20MB). 위젯 화면은 쓰지 않는다
+    "--noinclude-dlls=d3dcompiler_47.dll",
+    *[f"--nofollow-import-to=PySide6.{m}" for m in UNUSED_QT],
     "--include-package=agk75",
     "--include-module=hid",  # hidapi 는 단일 확장 모듈(hid.pyd)이다
     "--output-dir=dist",
