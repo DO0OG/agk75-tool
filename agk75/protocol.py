@@ -5,7 +5,7 @@
 import json
 import time
 
-from .i18n import Msg, MsgError
+from .i18n import Msg, MsgError, t
 
 VID, PID = 0x3151, 0x5009
 USAGE_PAGE, USAGE = 0xFFFF, 0x0002
@@ -187,6 +187,55 @@ def item_name(item):
     if h is not None:
         return HID_NAMES.get(h, "HID%d" % h)
     return "None" if not any(item) else "Special[" + " ".join("%02x" % x for x in item) + "]"
+
+
+# 4바이트 기능 항목 -> 이름 id(i18n 의 fnaction.<id>). 장치 설정 도구의 코드 표에서 코드->기능 사실만 옮겼다.
+FN_CODES = {id_: tuple(map(int, c.split(","))) for id_, c in (
+    ("reset", "10,2,0,0"), ("bri_dn", "3,0,112,0"), ("bri_up", "3,0,111,0"), ("next", "3,0,181,0"),
+    ("prev", "3,0,182,0"), ("stop", "3,0,183,0"), ("play", "3,0,205,0"), ("mute", "3,0,226,0"),
+    ("vol_up", "3,0,233,0"), ("vol_dn", "3,0,234,0"), ("media", "3,0,131,2"), ("mail", "3,0,138,1"),
+    ("calc", "3,0,146,1"), ("mypc", "3,0,148,1"), ("www_search", "3,0,33,2"), ("www_home", "3,0,35,2"),
+    ("www_back", "3,0,36,2"), ("www_fwd", "3,0,37,2"), ("www_stop", "3,0,38,2"), ("www_refresh", "3,0,39,2"),
+    ("www_fav", "3,0,42,2"), ("launchpad", "3,0,160,2"), ("tasks", "3,0,159,2"), ("power", "2,129,0,0"),
+    ("sleep", "2,130,0,0"), ("wake", "2,131,0,0"), ("fn", "10,1,0,0"), ("winlock", "10,3,0,0"),
+    ("os_win", "10,5,0,0"), ("os_mac", "10,5,1,0"), ("os_and", "10,5,2,0"), ("os_switch", "10,5,3,0"),
+    ("office", "10,6,0,0"), ("kblock", "10,7,0,0"), ("battery", "10,8,0,0"), ("led_toggle", "10,9,0,0"),
+    ("wasd", "10,10,0,0"), ("fn_matrix", "10,11,0,0"), ("power_save", "10,12,0,0"), ("fn_lock", "10,13,0,0"),
+    ("led_on_off", "13,0,0,0"), ("eff_loop", "13,1,0,0"), ("eff_up", "13,1,1,0"), ("eff_dn", "13,1,2,0"),
+    ("lbri_loop", "13,2,0,0"), ("lbri_up", "13,2,1,0"), ("lbri_dn", "13,2,2,0"), ("lspd_loop", "13,3,0,0"),
+    ("lspd_up", "13,3,1,0"), ("lspd_dn", "13,3,2,0"), ("ldir_loop", "13,5,0,0"), ("ldir_right", "13,5,0,1"),
+    ("ldir_left", "13,5,0,2"), ("lcol_loop", "13,5,1,0"), ("lcol_white", "13,5,1,2"), ("lcol_up", "13,5,1,3"),
+    ("lcol_dn", "13,5,1,4"), ("g24", "14,0,5,0"), ("wired", "14,0,6,0"), ("dev_loop", "14,0,255,0"),
+    ("g24_match", "14,1,0,0"), ("bt_match", "14,1,1,0"))}
+FN_IDS = {c: i for i, c in FN_CODES.items()}
+MOD_NAMES = {224: "Ctrl", 225: "Shift", 226: "Alt", 227: "Win", 228: "Ctrl", 229: "Shift", 230: "Alt", 231: "Win"}
+
+
+def fn_id(item):
+    """4바이트 항목 -> (이름 id, 자리표시자) 또는 None. 블루투스 1~5 는 (bt, {n})."""
+    c = tuple(item)
+    if c in FN_IDS:
+        return FN_IDS[c], {}
+    if c[0] == 14 and c[1] == 0 and c[2] <= 4 and c[3] == 0:
+        return "bt", {"n": c[2] + 1}
+    return None
+
+
+def item_label(item, short=False):
+    """4바이트 항목 -> 현재 언어의 이름. 기능 키/수정자+키 조합은 뜻으로, 모르는 값만 원시값을 보인다."""
+    h = hid_of(item)
+    if h is not None:
+        return HID_NAMES.get(h, "HID%d" % h)
+    if not any(item):
+        return t("key.none")
+    fid = fn_id(item)
+    if fid:
+        return t("fnaction." + fid[0] + (".s" if short else ""), **fid[1])
+    parts = item[1:] if item[0] == 0 else ()
+    if parts and all(b == 0 or b in HID_NAMES for b in parts):
+        return "+".join(MOD_NAMES.get(b) or HID_NAMES[b] for b in parts if b)
+    hexs = " ".join("%02x" % x for x in item)
+    return "".join(hexs.split()[:2]) + " " + "".join(hexs.split()[2:]) if short else t("key.special", hex=hexs)
 
 
 def check_int(name, v, lo, hi):

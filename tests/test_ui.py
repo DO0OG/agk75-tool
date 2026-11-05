@@ -294,3 +294,39 @@ def test_whole_keyboard_is_visible_without_scrolling(env, size, min_u):
         assert win.kb.u >= min_u
         assert win.kb.width() >= win.kb.u * 16 and win.kb.geometry().bottom() <= win.stage.height()
         assert win.kb.mapTo(win, win.kb.rect().bottomRight()).y() < win.height()
+
+
+def test_measure_card_draws_result_phases_and_errors_in_three_languages(env):
+    from agk75 import usbtrace
+    app, win, dev, _ = env
+    win.show_view("misc")
+    page = win.pages["misc"]
+    ep = usbtrace.analyze_gaps([0.12] * 100 + [0.25] * 30)
+    ep.update(ep=0x81, events=130, hist=usbtrace.histogram([0.12] * 100))
+    none = usbtrace.analyze_gaps([])
+    none.update(ep=0x82, events=0, hist=usbtrace.histogram([]))
+    result = {"endpoints": [ep, none], "best": ep}
+    base = {"running": False, "phase": "", "seconds": 15, "remaining": 0.0, "error": None}
+
+    def text():
+        lay = page.mres.layout()
+        return " | ".join(lay.itemAt(i).widget().text() for i in range(lay.count()) if lay.itemAt(i).widget()
+                          and hasattr(lay.itemAt(i).widget(), "text"))
+    for lang in ("ko", "en", "zh"):
+        win.set_lang(lang)
+        win.show_view("misc")
+        page = win.pages["misc"]
+        page.draw_measure({**base, "result": result})
+        out = text()
+        assert "8000" in out and "0x81" in out and "0x82" in out and "{" not in out, out
+        assert ("8000Hz" in out) and ("%dHz" % win.s["rate"] in out)  # 설정값과의 비교 줄
+        for state in ({"running": True, "phase": "uac", "remaining": 15.0, "result": None},
+                      {"running": True, "phase": "capture", "remaining": 7.2, "result": None},
+                      {"running": True, "phase": "analyze", "remaining": 0.0, "result": None},
+                      {"result": {"endpoints": [], "best": None}},
+                      {"result": {"endpoints": [none], "best": none}},
+                      {"result": None, "error": "boom"}):
+            page.draw_measure({**base, **state})
+            assert "{" not in text()
+    page.draw_measure({**base, "result": None, "error": "boom"})
+    assert text() == "boom"

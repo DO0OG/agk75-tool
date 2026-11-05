@@ -6,7 +6,7 @@ from .. import protocol as P
 from ..i18n import t
 from ..service import describe_error
 from .layout import FN_KEY
-from .page import Page, item_name, short
+from .page import Page, item_name, item_short
 from .rate_card import RateCard
 from .widgets import Seg, StateLabel, alive, button, clear_layout, h2, h3, hr, row, sub
 
@@ -54,8 +54,11 @@ class KeysPage(Page):
     def key_text(self, i):
         if i == FN_KEY:
             return "Fn"
-        n = item_name(self.cur()[i])
-        return "" if self.fn and n == t("key.none") else short(n)
+        it = self.cur()[i]
+        return "" if self.fn and not any(it) else item_short(it)
+
+    def key_tip(self, i):
+        return None if i == FN_KEY or (self.fn and not any(self.cur()[i])) else item_name(self.cur()[i])
 
     def key_dim(self, i):
         return i == FN_KEY
@@ -123,10 +126,12 @@ class KeysPage(Page):
         cap = QLabel(name)
         cap.setProperty("keycap", True)
         cap.setAlignment(Qt.AlignCenter)
+        cap.setWordWrap(True)
         desc = (t("keys.kind.f") if self.fn else t("keys.std_pos", name=P.HID_NAMES.get(default, "-") if default else "-"))
-        if name == t("key.special_short"):
-            desc += "\n" + t("keys.value", hex=" ".join("%02x" % b for b in it))
-        box.addWidget(row(cap, sub(desc), stretch=True))
+        desc += "\n" + t("keys.value", hex=" ".join("%02x" % b for b in it))
+        cap.setMinimumWidth(190)  # 긴 기능 이름도 한 줄~두 줄에 읽히게
+        box.addWidget(row(cap, stretch=True))
+        box.addWidget(sub(desc))
         box.addWidget(h3(t("keys.pick_title")))
         mode = Seg([("board", t("keys.mode.board")), ("list", t("keys.mode.list")), ("press", t("keys.mode.press"))],
                    self.mode)

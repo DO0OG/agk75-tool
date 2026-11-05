@@ -9,7 +9,7 @@
 A small program for configuring the ANTGAMER AGK75 (USB 3151:5009) while it is connected with a USB cable.
 It uses only Python 3.11, `hidapi` (`import hid`), and `PySide6` (Qt: QtCore, QtGui, QtWidgets, QtSvg). The UI is a native PySide6 window: no CDN, and no outside connections.
 The UI language is Korean, English, or Simplified Chinese; switching it in the top bar redraws everything at once (it follows the Windows display language at first and remembers your choice in `%AppData%\DO0OG\AGK75Tool.ini`).
-All device and measurement work runs one after another on a single worker thread; the UI only receives the results and updates itself.
+Device work and starting or checking a measurement run one after another on a single worker thread (the measurement itself runs on a separate thread so it does not block the worker, and device reads and writes are blocked while it runs); the UI only receives the results and updates itself.
 
 This program is an independent implementation based on an analysis of how the manufacturer's web configuration tool communicates.
 
@@ -55,7 +55,9 @@ The screenshots were taken by only reading the real keyboard (no writes). The UI
 
 ![Keys](docs/screenshots/keys_en.png)
 
-A polling rate card (click one of 8000/4000/2000/1000/500/250Hz to write it to the keyboard right away; the value of the current profile is read back and highlighted), reassigning single keys on layers 0-3 (from the picture, from a list, or by pressing a real key), and restoring defaults (returns to the keymap and Fn layers read from the device on first connection and saved to `%APPDATA%\AGK75Tool\factory_<device id>.json` (the working folder when run from source). The button is disabled if there is no saved copy. The saved copy is created by reading only and never writes to the device). The polling rate card in the screenshot is filled with the value read from a real keyboard.
+![Keys (Fn layer)](docs/screenshots/keys_fn_en.png)
+
+A polling rate card (click one of 8000/4000/2000/1000/500/250Hz to write it to the keyboard right away; the value of the current profile is read back and highlighted), reassigning single keys on layers 0-3 (from the picture, from a list, or by pressing a real key), and restoring defaults (returns to the keymap and Fn layers read from the device on first connection and saved to `%APPDATA%\AGK75Tool\factory_<device id>.json` (the working folder when run from source). The button is disabled if there is no saved copy. The saved copy is created by reading only and never writes to the device). The polling rate card in the screenshot is filled with the value read from a real keyboard, and the second screenshot shows the Fn layer selected.
 
 ### Lighting
 
@@ -73,7 +75,7 @@ Per-key actuation/release point, bottom dead zone, rapid trigger on/off, and pre
 
 ![Performance & more](docs/screenshots/misc_en.png)
 
-Debounce (ms), sleep time display, device option toggles (Win key lock, Mac mode (firmware write bit position not verified), WASD↔arrow keys, LEDs off, side LEDs off, keyboard lock, Fn matrix, power saving mode), and measurement of the Raw Input polling rate (15 seconds, result and histogram).
+Debounce (ms), sleep time display, device option toggles (Win key lock, Mac mode (firmware write bit position not verified), WASD↔arrow keys, LEDs off, side LEDs off, keyboard lock, Fn matrix, power saving mode), and measurement of the polling rate from a USB trace (15 seconds, needs administrator rights, minimum-gap band and 0-2 ms distribution).
 
 ### Backup / restore
 
@@ -91,30 +93,33 @@ The polling rate is written to a register in the keyboard firmware and is chosen
 
 | Code | Polling rate | Result (profile 0, wired, measured in "Performance & more") |
 |---|---|---|
-| 5 | 250Hz | 4 ms period, R 0.94 - confirmed by measurement |
-| 4 | 500Hz | 2 ms period, R 0.81 - confirmed by measurement |
-| 3 | 1000Hz | 1 ms period, R 0.42 - confirmed by measurement |
-| 2 | 2000Hz | faster than 1000Hz - the value itself is an estimate |
-| 1 | 4000Hz | faster than 1000Hz - the value itself is an estimate |
-| 0 | 8000Hz | faster than 1000Hz - the value itself is an estimate |
+| 5 | 250Hz | 4 ms gaps - confirmed by the earlier period measurement |
+| 4 | 500Hz | 2 ms gaps - confirmed by the earlier period measurement |
+| 3 | 1000Hz | minimum-gap band 0.96-1.0 ms (theoretical period 1.0 ms) |
+| 2 | 2000Hz | minimum-gap band 0.47-0.50 ms (theoretical period 0.5 ms) |
+| 1 | 4000Hz | minimum-gap band 0.22-0.25 ms (theoretical period 0.25 ms) |
+| 0 | 8000Hz | minimum-gap band 0.117-0.122 ms (theoretical period 0.125 ms) |
 | 6 | (not used) | has no period, and is not 125Hz |
 
-- For 2000/4000/8000Hz only the fact that they are faster than 1000Hz was confirmed, and measuring on the PC cannot tell them apart. The Hz values in the table are estimated from the order of the codes.
+- For codes 3, 2, 1 and 0 about 1000 transfer gaps each were collected while pressing several keys at once with a palm. A few outliers fell outside the band (for example 0.032, 0.066 and 0.090 ms for code 0). They look like the completion of the previous packet being recorded late, and the decision is built not to be thrown off by them.
+- Transfer times can fall on a 0.125 ms grid at any setting, so grid or periodicity (Rayleigh) tests are no evidence. The evidence is the band of the shortest observed gaps.
 - Whether wireless mode has any restriction has not been checked. The results above were obtained over a wired connection.
 - The polling interval reported by the USB hub is always 125µs regardless of how often the firmware sends, so it cannot be used as evidence. That is why it is not shown in the UI.
 
 ### How the measurement works
 
-The measurement card in "Performance & more" collects only the arrival times of this keyboard's input through Windows Raw Input (key contents are not stored) and analyzes the event intervals for 15 seconds.
+The measurement card in "Performance & more" uses Windows USB event tracing (ETW) to collect only the completion times of this keyboard's interrupt IN transfers for 15 seconds and analyzes the gaps. No driver or filter is installed, key contents (payloads) are not collected, and only the times and the endpoint address are used.
 
-1. Alternate between several keys. Holding one key down mixes in auto-repeat (around 31 ms). Those intervals (28 ms or longer) and intervals shorter than 1.5 ms (Windows message handling delay, so no evidence) are left out of the samples.
-2. Call each remaining interval gap (ms). For each period P = 4, 2, 1 ms, compute R = |Σ exp(2πi·gap/P)| / n (it gets closer to 1 the more the intervals gather at multiples of P).
-3. With at least 50 samples, take the first period, starting from the largest P, with R ≥ 0.35 and report 250/500/1000Hz. If none reaches it, the result is "faster than 1000Hz (2000-8000Hz cannot be told apart)"; with fewer than 50 samples it is "not enough samples".
-4. The histogram shows 0-16 ms in 1 ms steps.
+1. Press and release several keys at once with your palm or several fingers, over and over. While the key state keeps changing, the firmware sends a report every polling period, so consecutive transfer gaps shrink to the polling period. Do not do this during a game.
+2. When you start, the program re-runs itself with administrator rights as `--trace <job file>` (from source: `python -m agk75 --trace ...`). Depending on the PC, a User Account Control (UAC) prompt may appear. The administrator side opens a trace session, closes it after 15 seconds, converts it with tracerpt, writes only the gaps to a result file, and, whichever way it ends, stops the session and deletes the temporary files (ETL and XML). Reading and writing device settings is blocked while measuring.
+3. Security: only `%APPDATA%\AGK75Tool\admin\<uuid>.ops.json` is accepted as a job file (compared by real path), the JSON may contain only the number of seconds (an integer from 3 to 60) and never a command, the result file name is chosen by the administrator side, and the only programs run are `logman` and `tracerpt` at their fixed System32 paths. If validation fails, nothing is written and it exits.
+4. Each endpoint (0x81, 0x82) is decided separately. For every candidate period 0.125, 0.25, 0.5, 1, 2 and 4 ms, the gaps inside the band of 0.85 to 1.05 times the period are counted, and the shortest period for which the gaps shorter than its band are at most 10% of the upper samples is taken as the minimum period (in the measurements the minimum gap went down to 0.88 times the period). With fewer than 30 short gaps (up to 4.2 ms) or fewer than 10 gaps in the band, the result is "Cannot tell: press several keys at once and measure again".
+5. This is an observed minimum gap, so the real polling rate may be equal to or higher than the measured value. With fewer than 50 gaps in the band it is shown as "at least this much".
+6. The result shows the measured Hz, the minimum-gap band, the sample count and the short-gap distribution for 0-2 ms (0.125 ms steps), and tells you when it differs from the setting stored in the keyboard.
 
 ## Limitations
 
-- Polling rate: follow the table in the "Polling rate" section above. 2000/4000/8000Hz are estimated values that measurement cannot tell apart, and profiles other than 0 and wireless mode have not been checked.
+- Polling rate: follow the table in the "Polling rate" section above. Profiles other than 0 and wireless mode have not been checked. The measurement observes the minimum gap, so enough keys must be pressed at once, and it needs administrator rights.
 - Battery: not supported, because there is no way to read it over a wired (USB) connection.
 - Features whose writes have not been verified on real hardware: device option toggles other than LED off, Fn default restore. Side lighting and LED off were verified with write and read-back through the previous UI; the PySide6 UI write paths were only tested with a fake device. Only the transmitted bytes and their order were checked with unit tests (fake device). Backup restore was confirmed on real hardware with 0 differences two times in a row (2026-11-04).
 - The code supports the magnetic switch data of all profiles (`dump(dev, all_profiles=True)`), but switching profiles is a write, so the default backup reads only the current profile.
@@ -129,13 +134,14 @@ The measurement card in "Performance & more" collects only the arrival times of 
 
 - `agk75/protocol.py` 64-byte Feature report transfer, checksums, opcodes, GET/SET
 - `agk75/service.py` UI-independent device, backup, and polling rate logic (input validation, readback checks, backup/restore, factory snapshot, measurement). The device is accessed by one task at a time
+- `agk75/usbtrace.py` polling rate measurement: per-endpoint minimum-gap band decision from a USB trace, the administrator-side `--trace` handling and job file validation
 - `agk75/i18n.py` one ko/en/zh dictionary for the messages used by the UI and the logic. Errors are raised as key + values (`MsgError("err.no_change")`) and translated into the current language when shown
 - `agk75/ui/` PySide6 UI: `main_window.py` (top bar, navigation, QStackedWidget, toasts), `chrome.py`, `keyboard_widget.py` (keyboard picture), `keys_page.py`, `rate_card.py`, `light_page.py`, `magnet_page.py`, `misc_page.py`, `backup_page.py`, `worker.py` (the single worker thread), `widgets.py`, `page.py`, `layout.py` (key layout), `theme.py` (QSS), `app.py`
-- `agk75/__main__.py` opening the window, `--dump` (`agk75_app.py` is the exe entry script)
+- `agk75/__main__.py` opening the window, `--dump`, `--trace` (administrator-side measurement) (`agk75_app.py` is the exe entry script)
 - `build_exe.py`, `installer/AGK75Tool.iss`, `installer/THIRD-PARTY-NOTICES.txt`, `make_icon.py` installer build
 - `docs/screenshots/` README screenshots (`<screen>_<ko|en|zh>.png`)
 - `tests/test_protocol*.py` checksum, encoding, and decoding tests
 - `tests/test_service.py`, `tests/test_service_ext.py` service tests (fake device): input validation, readback checks, snapshot, restore, measurement
-- `tests/test_rawinput.py` interval periodicity decision (multiples of 4/2/1 ms, random intervals, too few samples, histogram)
+- `tests/test_usbtrace.py` minimum-gap decision (measured-distribution fixtures), rejected job files, result path, session cleanup call order (fake runner)
 - `tests/test_i18n.py` checks that the three language dictionaries have matching keys and placeholders, and that the keys used by the UI code exist
 - `tests/test_ui.py`, `tests/fakedev.py` UI smoke tests with `QT_QPA_PLATFORM=offscreen`: the five screens are created, three-language switching, writes go only to the worker thread, bad input is rejected, disconnect → reconnect, closing the window ends the process

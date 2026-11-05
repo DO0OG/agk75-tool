@@ -37,9 +37,12 @@ class Service:
 
     def measurer(self):
         if self.measure is None:
-            from .rawinput import Measurer
-            self.measure = Measurer()
+            from .usbtrace import Tracer
+            self.measure = Tracer()
         return self.measure
+
+    def measuring(self):
+        return self.measure is not None and self.measure.running()
 
     def device(self):  # lock 을 잡은 채로 부른다
         if self.dev is None:
@@ -61,6 +64,8 @@ class Service:
     def _call(self, fn, body, needs_dev=True):
         if not needs_dev:
             return fn(self, None, body)
+        if self.measuring():  # 측정 중에는 장치 통신과 겹치지 않게 한다
+            raise MsgError("err.measuring")
         with self.lock:
             try:
                 return fn(self, self.device(), body)
@@ -123,7 +128,7 @@ class Service:
 
     def poll(self):
         """연결 여부는 장치 쓰기 중이 아닐 때만 가볍게 읽어(프로필) 확인한다."""
-        if not self.lock.acquire(blocking=False):
+        if self.measuring() or not self.lock.acquire(blocking=False):
             return {"connected": self.dev is not None}
         try:
             return {"connected": True, "profile": self.device().get_profile()}
@@ -318,9 +323,7 @@ def h_options(hub, dev, body):
 
 
 def _item_label(item):
-    if P.hid_of(item) is not None:
-        return P.item_name(item)
-    return t("key.none") if not any(item) else t("key.special", hex=" ".join("%02x" % x for x in item))
+    return P.item_label(item)
 
 
 def _write_key(hub, dev, setter, body, kind):
@@ -411,4 +414,7 @@ def h_measure_start(hub, dev, body):
 
 
 def h_measure_status(hub, dev, body):
-    return hub.measurer().status()
+    st = hub.measurer().status()
+    if st.get("error") is not None:
+        st["error"] = describe_error(st["error"])
+    return st

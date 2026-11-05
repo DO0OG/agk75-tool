@@ -4,6 +4,7 @@ import pytest
 
 from agk75 import protocol as P
 from agk75 import service as s
+from agk75.i18n import MsgError
 
 from test_service import Fake, hub
 
@@ -103,15 +104,18 @@ def test_backup_writes_file_and_lists_it(tmp_path, monkeypatch):
 
 class FakeMeasure:
     def __init__(self):
-        self.running = False
+        self.busy = False
+
+    def running(self):
+        return self.busy
 
     def start(self, seconds):
-        if self.running:
+        if self.busy:
             raise ValueError("이미 측정 중입니다")
-        self.running, self.seconds = True, seconds
+        self.busy, self.seconds = True, seconds
 
     def status(self):
-        return {"running": self.running, "result": None}
+        return {"running": self.busy, "result": None, "error": MsgError("err.trace_uac", code=1223)}
 
 
 def test_measure_start_and_status():
@@ -124,7 +128,20 @@ def test_measure_start_and_status():
     assert r["seconds"] == 15 and h.measure.seconds == 15
     with pytest.raises(ValueError):
         h.measure_start(seconds=10)  # 이미 측정 중
-    assert h.measure_status()["running"] is True
+    st = h.measure_status()
+    assert st["running"] is True and "취소" in st["error"]  # 오류는 현재 언어 문구로 바뀐다
+
+
+def test_device_work_and_poll_wait_while_measuring():
+    h = hub(Fake())
+    h.measure = FakeMeasure()
+    assert h.rate(hz=1000)["applied"] is True and h.poll()["connected"] is True
+    h.measure.busy = True
+    with pytest.raises(ValueError):
+        h.rate(hz=1000)
+    assert h.poll() == {"connected": True} and h.measure_status()["running"] is True
+    h.measure.busy = False
+    assert h.rate(hz=1000)["applied"] is True
 
 
 def test_magnet_range_and_index_use_128_keys():

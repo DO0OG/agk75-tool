@@ -43,7 +43,7 @@ class RateCard:
         line.addWidget(seg)
         line.addStretch(1)
         lay.addLayout(line)
-        for key in ("rate.fast", "rate.wired", "rate.note"):
+        for key in ("rate.wired", "rate.note"):
             st = StateLabel()
             st.set(t(key))
             lay.addWidget(st)

@@ -248,6 +248,7 @@ class MainWindow(QMainWindow):
             return
         pg = self.page()
         self.kb.set_cells({i: (pg.key_text(i), pg.key_sub(i), pg.key_fill(i), pg.key_dim(i)) for i, *_ in LAYOUT})
+        self.kb.set_tips({i: pg.key_tip(i) for i, *_ in LAYOUT})
         self.kb.set_selected(self.sel)
 
     def show_view(self, name):

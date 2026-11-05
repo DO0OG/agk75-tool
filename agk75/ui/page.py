@@ -1,7 +1,6 @@
 """화면(메뉴 한 칸) 공통 뼈대. render() 가 내용을 처음부터 다시 만든다(언어 전환 때도 쓴다)."""
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
-from .. import i18n
 from .. import protocol as P
 from .layout import FN_KEY
 from .widgets import clear_layout
@@ -13,15 +12,17 @@ SHORT = {"CapsLock": "Caps", "Backspace": "Bksp", "PageUp": "PgUp", "PageDown": 
 
 
 def item_name(it):
-    """4바이트 항목 -> 이름("없음" / "특수" 포함)."""
-    h = P.hid_of(it)
-    if h is not None:
-        return P.HID_NAMES.get(h, "HID%d" % h)
-    return i18n.t("key.special_short") if any(it) else i18n.t("key.none")
+    """4바이트 항목 -> 전체 이름(기능 키는 뜻으로, 빈 키는 "없음", 모르는 값은 "특수 [원시값]")."""
+    return P.item_label(it)
 
 
 def short(name):
     return SHORT.get(name, name)
+
+
+def item_short(it):
+    """키 그림에 넣을 짧은 이름."""
+    return short(P.item_label(it, True))
 
 
 class Page(QWidget):
@@ -56,7 +57,11 @@ class Page(QWidget):
     def key_text(self, i):
         if i == FN_KEY:
             return "Fn"
-        return short(item_name(self.s["keymap"][self.s["profile"]][i]))
+        return item_short(self.s["keymap"][self.s["profile"]][i])
+
+    def key_tip(self, i):
+        """키 그림에서 마우스를 올렸을 때 보이는 전체 이름."""
+        return None if i == FN_KEY else item_name(self.s["keymap"][self.s["profile"]][i])
 
     def key_sub(self, i):
         return None

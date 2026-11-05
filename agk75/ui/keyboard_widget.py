@@ -1,7 +1,7 @@
 """키보드 그림: 다중 선택(Shift·Ctrl 클릭, 끌기), 값 열지도, 조명 색 미리보기."""
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QSizePolicy, QWidget
+from PySide6.QtWidgets import QSizePolicy, QToolTip, QWidget
 
 from . import theme
 from .layout import LAYOUT, LAYOUT_H, LAYOUT_W
@@ -17,7 +17,7 @@ class KeyboardWidget(QWidget):
         super().__init__()
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.cells, self.selected, self.hover = {}, set(), None
+        self.cells, self.tips, self.selected, self.hover = {}, {}, set(), None
         self.glow, self.opacity, self.dragging = None, 1.0, False
         self.u = MAX_U
         self._fit(self.width() or 800)
@@ -41,6 +41,20 @@ class KeyboardWidget(QWidget):
         """cells = {키 번호: (글자, 작은 글자 또는 None, QColor 또는 None, 흐리게 여부)}"""
         self.cells = cells
         self.update()
+
+    def set_tips(self, tips):
+        """{키 번호: 마우스를 올렸을 때 보일 전체 이름 또는 None}"""
+        self.tips = tips
+
+    def event(self, e):
+        if e.type() == QEvent.ToolTip:
+            tip = self.tips.get(self.key_at(e.pos()))
+            if tip:
+                QToolTip.showText(e.globalPos(), tip, self)
+            else:
+                QToolTip.hideText()
+            return True
+        return super().event(e)
 
     def set_selected(self, sel):
         self.selected = set(sel)
@@ -124,11 +138,21 @@ class KeyboardWidget(QWidget):
     @staticmethod
     def _text(p, r, text, subtext, main, small):
         inner = r.adjusted(2, 0, -2, 0)
+        w = int(inner.width())
         p.setFont(main)
-        shown = QFontMetrics(main).elidedText(text, Qt.ElideRight, int(inner.width()))
         if subtext is None:
-            p.drawText(inner, Qt.AlignCenter, shown)
+            if QFontMetrics(main).horizontalAdvance(text) <= w:
+                p.drawText(inner, Qt.AlignCenter, text)
+            else:  # 안 들어가면 작은 글자로 줄바꿈(공백·한글 단위), 그래도 넘치면 끝을 줄인다
+                text = text.replace("+", "+​")  # 조합 키는 + 뒤에서 줄을 바꾼다
+                p.setFont(small)
+                fm = QFontMetrics(small)
+                rect = fm.boundingRect(QRectF(0, 0, w, inner.height()).toRect(), Qt.AlignCenter | Qt.TextWordWrap, text)
+                if rect.height() > inner.height():
+                    text = fm.elidedText(text, Qt.ElideRight, w)
+                p.drawText(inner, Qt.AlignCenter | Qt.TextWordWrap, text)
             return
+        shown = QFontMetrics(main).elidedText(text, Qt.ElideRight, w)
         p.drawText(QRectF(inner.left(), inner.top(), inner.width(), inner.height() / 2 + 6),
                    Qt.AlignHCenter | Qt.AlignBottom, shown)
         p.setFont(small)

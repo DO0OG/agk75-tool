@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QProgressBar, QV
 
 from ..i18n import t
 from ..service import describe_error
+from ..usbtrace import HIST_STEP
 from .page import Page
 from .widgets import RangeRow, StateLabel, Switch, alive, button, card, clear_layout, h2, row, sub
 
@@ -180,29 +181,39 @@ class MiscPage(Page):
         if j.get("error"):
             return line(j["error"], "bad")
         if j["running"]:
-            return line(t("measure.running", remaining=math.ceil(j["remaining"]), events=j["events"]))
+            return line(t({"uac": "measure.uac", "analyze": "measure.analyzing"}.get(j["phase"], "measure.running"),
+                          remaining=math.ceil(j["remaining"])))
         r = j["result"]
         if not r:
             return
-        if r["hz"]:
-            lay.addWidget(bold(t("measure.hz", hz=r["hz"])))
-        elif r["faster"]:
-            lay.addWidget(bold(t("measure.faster")))
+        best = r["best"]
+        if best is None:
+            return line(t("measure.nodata"), "bad")
+        if not best["hz"]:
+            lay.addWidget(bold(t("measure.insufficient")))
         else:
-            lay.addWidget(bold(t("measure.insufficient", n=r["samples"])))
-        if r["enough"]:
-            line(t("measure.detail", n=r["samples"], **{"r%d" % p: "%.2f" % v for p, v in r["r"].items()}))
-        top = max(1, *(h["count"] for h in r["hist"]))
+            lay.addWidget(bold(t("measure.hz", hz=best["hz"])))
+        for e in r["endpoints"]:
+            ep = "0x%02X" % e["ep"]
+            line(t("measure.ep", ep=ep, hz=e["hz"], lo="%.3f" % e["min_ms"], hi="%.3f" % e["max_ms"], band=e["band_count"],
+                   n=e["samples"]) if e["hz"] else t("measure.ep_none", ep=ep, n=e["samples"]))
+        if best["note"] == "few":
+            line(t("measure.few"))
+        cur = (self.s or {}).get("rate")
+        if best["hz"] and cur:
+            line(t("measure.same" if best["hz"] == cur else "measure.differs", cur=cur), "ok" if best["hz"] == cur else "bad")
+        lay.addWidget(sub(t("measure.hist")))
+        top = max(1, *best["hist"])
         grid = QGridLayout()
         grid.setHorizontalSpacing(8)
-        for i, h in enumerate(r["hist"]):
+        for i, c in enumerate(best["hist"]):
             bar = QProgressBar()
             bar.setRange(0, top)
-            bar.setValue(h["count"])
+            bar.setValue(c)
             bar.setTextVisible(False)
             bar.setMaximumHeight(10)
-            grid.addWidget(QLabel("%s ms" % h["label"]), i, 0)
+            grid.addWidget(QLabel("%.3f~%.3f" % (i * HIST_STEP, (i + 1) * HIST_STEP)), i, 0)
             grid.addWidget(bar, i, 1)
-            grid.addWidget(QLabel(str(h["count"])), i, 2)
+            grid.addWidget(QLabel(str(c)), i, 2)
         grid.setColumnStretch(1, 1)
         lay.addLayout(grid)
