@@ -24,15 +24,14 @@ class SnapFake(Fake):
 
     def __getattr__(self, name):
         if name in ("revision", "get_profile", "get_debounce", "get_sleep", "get_light", "get_sidelight",
-                    "get_options"):
+                    "get_options", "get_rate"):
             return lambda: None
         if name == "get_magnet":
             return lambda t: [0] * 128
         raise AttributeError(name)
 
 
-def test_state_saves_snapshot_once_and_factory_restore_uses_it(tmp_path, monkeypatch):
-    monkeypatch.setattr(s.usbinfo, "read", lambda: {})
+def test_state_saves_snapshot_once_and_factory_restore_uses_it(tmp_path):
     dev = SnapFake()
     h = s.Service(opener=lambda: dev, backup_dir=tmp_path, factory_dir=tmp_path)
     with pytest.raises(ValueError):
@@ -122,7 +121,7 @@ def test_measure_start_and_status():
         with pytest.raises(ValueError):
             h.measure_start(seconds=bad)
     r = h.measure_start()
-    assert r["seconds"] == 10 and h.measure.seconds == 10
+    assert r["seconds"] == 15 and h.measure.seconds == 15
     with pytest.raises(ValueError):
         h.measure_start(seconds=10)  # 이미 측정 중
     assert h.measure_status()["running"] is True
@@ -136,13 +135,10 @@ def test_magnet_range_and_index_use_128_keys():
     assert P.KEYS == 128
 
 
-def test_state_has_fresh_usb_and_no_rate(monkeypatch):
-    reads = iter([{"max_hz": 8000}, {"max_hz": 1000}])
-    monkeypatch.setattr(s.usbinfo, "read", lambda: next(reads))
-
+def test_state_has_current_profile_rate_and_no_usb():
     class StateFake(Fake):
         def __getattr__(self, name):  # 읽기 메서드는 빈 값으로
-            if name in ("device_id", "revision", "get_profile", "get_debounce", "get_sleep", "get_light",
+            if name in ("device_id", "revision", "get_debounce", "get_sleep", "get_light",
                         "get_sidelight", "get_options"):
                 return lambda: None
             if name in ("get_magnet",):
@@ -151,9 +147,10 @@ def test_state_has_fresh_usb_and_no_rate(monkeypatch):
                 return lambda l: bytes(512)
             raise AttributeError(name)
 
-    h = hub(StateFake())
-    a, b = h.state(), h.state()
-    assert "rate_code" not in a and a["usb"]["max_hz"] == 8000 and b["usb"]["max_hz"] == 1000  # 캐시하지 않는다
+    dev = StateFake()
+    dev.rate = {2: 500}
+    a = hub(dev).state()
+    assert a["profile"] == 2 and a["rate"] == 500 and "usb" not in a
 
 
 def test_restore_reports_partial_restore(tmp_path, monkeypatch):

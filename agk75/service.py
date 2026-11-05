@@ -8,7 +8,6 @@ from pathlib import Path
 
 from . import i18n
 from . import protocol as P
-from . import ratectl, usbinfo
 from .i18n import MsgError, t
 
 MAG_NUM = ("travel", "lift", "dead", "rt_press", "rt_lift")
@@ -34,11 +33,7 @@ class Service:
         self.dev, self.lock = None, threading.Lock()
         self.progress = {"n": 0, "total": 0, "running": False}
         self.on_progress = None  # (n, total) 를 받는 함수: 전체 적용 진행 알림
-        self.on_step = None  # 폴링레이트 진행 문구 키를 받는 함수
         self.measure = None  # 폴링레이트 측정기(처음 쓸 때 만든다)
-        self.rate = {"running": False, "step": ""}  # PC 쪽 폴링레이트 변경 진행 상황
-        self.rate_lock = threading.Lock()
-        self.rate_pending = None  # 기한 안에 끝나지 않은 관리자 작업의 결과 파일 경로
 
     def measurer(self):
         if self.measure is None:
@@ -62,11 +57,6 @@ class Service:
     def close(self):
         with self.lock:
             self.drop()
-
-    def step(self, key):
-        self.rate["step"] = key
-        if self.on_step:
-            self.on_step(key)
 
     def _call(self, fn, body, needs_dev=True):
         if not needs_dev:
@@ -100,6 +90,12 @@ class Service:
     def fn(self, **body):
         return self._call(h_fn, body)
 
+    def rate(self, **body):
+        return self._call(h_rate, body)
+
+    def rate_read(self):
+        return self._call(h_rate_read, {})
+
     def options(self, **body):
         return self._call(h_options, body)
 
@@ -124,21 +120,6 @@ class Service:
 
     def measure_status(self):
         return self._call(h_measure_status, {}, False)
-
-    def usbinfo(self):
-        return _usb()
-
-    def rate_state(self):
-        return self._call(h_rate_state, {}, False)
-
-    def rate_prepare(self):
-        return self._call(h_rate_prepare, {}, False)
-
-    def rate_set(self, **body):
-        return self._call(h_rate_set, body, False)
-
-    def rate_reset(self):
-        return self._call(h_rate_reset, {}, False)
 
     def poll(self):
         """연결 여부는 장치 쓰기 중이 아닐 때만 가볍게 읽어(프로필) 확인한다."""
@@ -277,9 +258,9 @@ def h_state(hub, dev, body):
               for i in range(P.KEYS)}
     keymap = {l: dev.get_keymatrix(l) for l in range(P.LAYERS)}
     fn = {l: dev.get_fn(l) for l in range(P.LAYERS)}
+    profile = dev.get_profile()
     return {"device": {"id": dev.device_id(), "revision": dev.revision()},
-            "usb": _usb(),  # 재연결 뒤 값이 바뀌므로 캐시하지 않는다
-            "profile": dev.get_profile(), "debounce": dev.get_debounce(), "sleep": dev.get_sleep(),
+            "profile": profile, "rate": None if profile is None else dev.get_rate(profile), "debounce": dev.get_debounce(), "sleep": dev.get_sleep(),
             "light": dev.get_light(), "sidelight": dev.get_sidelight(),
             "options": (lambda r: P.decode_options(r) if r else None)(dev.get_options()),
             "keymap": {l: _split(v) for l, v in keymap.items()},
@@ -293,7 +274,23 @@ def h_state(hub, dev, body):
 def h_profile(hub, dev, body):
     want = _int(body, "layer", 0, P.LAYERS - 1)
     got = dev.set_profile(want)
-    return {"applied": got == want, "profile": got}
+    return {"applied": got == want, "profile": got, "rate": None if got is None else dev.get_rate(got)}
+
+
+def h_rate_read(hub, dev, body):
+    profile = dev.get_profile()
+    return {"profile": profile, "rate": None if profile is None else dev.get_rate(profile)}
+
+
+def h_rate(hub, dev, body):
+    want = _int(body, "hz", 1, 100000)
+    if want not in P.RATE_CODES:
+        raise MsgError("err.hz_choice", list=sorted(P.RATE_CODES, reverse=True))
+    profile = dev.get_profile()
+    if profile is None:
+        raise OSError("Could not read the current profile")
+    got = dev.set_rate(want, profile)
+    return {"applied": got == want, "profile": profile, "rate": got}
 
 
 def h_debounce(hub, dev, body):
@@ -324,36 +321,6 @@ def _item_label(item):
     if P.hid_of(item) is not None:
         return P.item_name(item)
     return t("key.none") if not any(item) else t("key.special", hex=" ".join("%02x" % x for x in item))
-
-
-def _tr_usb(u):
-    """usbinfo.read() 결과의 오류 키를 요청 언어로 바꾼다."""
-    if "error" in u:
-        u = {k: v for k, v in u.items() if k != "error_params"} | {"error": t(u["error"], **u.get("error_params", {}))}
-    return u
-
-
-def _usb():
-    return _tr_usb(usbinfo.read())
-
-
-def _driver_state():
-    st = ratectl.driver_state()
-    m = st.pop("device_error_msg", None)
-    if m:
-        st["device_error"] = i18n.msg(i18n.from_json(m))
-    return st
-
-
-def _admin_out(res):
-    """관리자 작업 결과의 error·detail 을 요청 언어로 바꾸고 번역용 키는 뺀다."""
-    out = {k: v for k, v in res.items() if k != "error_msg"}
-    if res.get("error_msg"):
-        out["error"] = i18n.msg(i18n.from_json(res["error_msg"]))
-    out["ops"] = [{**{k: v for k, v in o.items() if k != "detail_msg"},
-                   **({"detail": i18n.msg(i18n.from_json(o["detail_msg"]))} if o.get("detail_msg") else {})}
-                  for o in res.get("ops", [])]
-    return out
 
 
 def _write_key(hub, dev, setter, body, kind):
@@ -438,74 +405,10 @@ def h_backups(hub, dev, body):
 
 
 def h_measure_start(hub, dev, body):
-    seconds = _int({"s": body.get("seconds", 10)}, "s", 3, 60)
+    seconds = _int({"s": body.get("seconds", 15)}, "s", 3, 60)
     hub.measurer().start(seconds)
     return {"started": True, "seconds": seconds}
 
 
 def h_measure_status(hub, dev, body):
-    st = hub.measurer().status()
-    r = st.get("result")
-    if r and r.get("note"):
-        st = {**st, "result": {**r, "note": t(r["note"])}}
-    return st
-
-
-def _rate_job(hub, step, fn):
-    """폴링레이트 작업은 한 번에 하나만 돌린다. 진행 문구는 hub.on_step 으로 알린다."""
-    if not hub.rate_lock.acquire(blocking=False):
-        raise MsgError("err.rate_busy")
-    hub.rate["running"] = True
-    hub.step(step)
-    try:
-        if ratectl.admin_pending(hub.rate_pending):
-            raise MsgError("err.admin_busy")
-        hub.rate_pending = None
-        return fn()
-    finally:
-        hub.rate["running"] = False
-        hub.rate_lock.release()
-
-
-def _rate_apply(hub, hz):
-    def go():
-        ops = ratectl.plan_set(hz)
-        with hub.lock:
-            hub.drop()  # 장치를 재시작하면 열어 둔 핸들이 무효가 된다
-            if ops:
-                hub.step("rate.step.admin")
-                res = ratectl.run_admin(ops)
-                hub.rate_pending = res.get("pending")
-                hub.step("rate.step.wait")
-                usb = ratectl.reread_usb()
-            else:
-                res, usb = {"ok": True, "ops": []}, usbinfo.read()
-        got = usb.get("max_hz") if "error" not in usb else None
-        admin = _admin_out(res)
-        return {"applied": bool(res.get("ok")), "requested": hz, "message": admin.get("error", ""), "admin": admin,
-                "reboot_needed": ratectl.needs_reboot(res), "usb": _tr_usb(usb), "verified": None if got is None else got == hz, "state": _driver_state()}
-    return _rate_job(hub, "rate.step.preparing", go)
-
-
-def h_rate_state(hub, dev, body):
-    return {"state": _driver_state(), "usb": _usb(), "table": ratectl.RATE_TABLE}
-
-
-def h_rate_prepare(hub, dev, body):
-    def go():
-        info = ratectl.prepare()
-        return {"prepared": True, "nopatch": info["nopatch"], "signer": info["signer"], "state": _driver_state()}
-    return _rate_job(hub, "rate.step.download", go)
-
-
-def h_rate_set(hub, dev, body):
-    hz = _int(body, "hz", 1, 100000)
-    if hz not in ratectl.RATE_TABLE:
-        raise MsgError("err.hz_choice", list=sorted(ratectl.RATE_TABLE, reverse=True))
-    return _rate_apply(hub, hz)
-
-
-def h_rate_reset(hub, dev, body):
-    return _rate_apply(hub, 8000)
-
-
+    return hub.measurer().status()

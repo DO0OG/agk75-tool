@@ -1,3 +1,4 @@
+import random
 import sys
 
 import pytest
@@ -5,34 +6,43 @@ import pytest
 from agk75 import rawinput as r
 
 
-def test_analyze_cluster_estimate_and_lower_bound():
-    res = r.analyze([0.125] * 40 + [0.5] * 20 + [3.0])
-    assert res["hz_estimate"] == 8000 and res["hz_at_least"] == 8000 and res["cluster_n"] == 40
-    assert [h["count"] for h in res["hist"]] == [0, 40, 0, 20, 0, 1]
-    assert r.analyze([1.0] * 60)["hz_estimate"] == 1000
-    assert r.analyze([8.0] * 60)["hz_at_least"] == 125
-    jit = [k * 1.0 + 0.04 * ((i * 7) % 5 - 2) / 2 for i, k in enumerate([1, 2, 1, 3, 1, 4, 1, 2] * 10)]
-    assert r.analyze(jit)["hz_estimate"] == 1000
+def multiples(period, n, seed=1, jitter=0.12, max_k=6):
+    """period ms 의 배수 간격 + 지터(키를 번갈아 칠 때 보이는 모양)."""
+    rnd = random.Random(seed)
+    return [period * rnd.randint(1, max_k) + rnd.uniform(-jitter, jitter) for _ in range(n)]
 
 
-def test_analyze_needs_enough_samples_and_drops_same_report_events():
-    res = r.analyze([1.0] * 49)
-    assert res["enough"] is False and res["hz_estimate"] is None
-    res = r.analyze([0.01] * 100 + [1.0] * 50)  # 한 리포트에 든 이벤트(0.05ms 미만)는 버린다
-    assert res["samples"] == 50 and res["min_ms"] == 1.0
-    assert r.analyze([])["min_ms"] is None
+def test_analyze_periodicity_picks_250_500_1000():
+    for period, hz in ((4, 250), (2, 500), (1, 1000)):
+        res = r.analyze([g for g in multiples(period, 300) if g >= 1.5] + [4.0] * 5)
+        assert res["enough"] and res["hz"] == hz and res["faster"] is False, (period, res["r"])
+    res = r.analyze([4.0 + 0.1 * ((i * 7) % 5 - 2) / 2 for i in range(80)])
+    assert res["hz"] == 250 and res["r"][4] > 0.9  # 큰 주기부터 본다
 
 
-def test_analyze_real_measurement_is_not_1000hz():
-    xs = [2.5 + i * 0.01 for i in range(412)] + [1.1 + i * 0.05 for i in range(18)]
-    xs += [0.5 + i * 0.04 for i in range(12)] + [0.297, 0.31, 0.33, 0.36, 0.4, 0.42, 0.45, 0.49]
-    res = r.analyze(xs)
-    assert res["min_ms"] == 0.297 and res["hz_estimate"] != 1000 and res["hz_at_least"] >= 2000
+def test_analyze_random_gaps_mean_faster_than_1000hz():
+    rnd = random.Random(7)
+    res = r.analyze([rnd.uniform(1.5, 28.0) for _ in range(300)])
+    assert res["enough"] and res["hz"] is None and res["faster"] is True
+    assert all(v < r.R_MIN for v in res["r"].values())
 
 
-def test_analyze_lone_outlier_is_not_enough():
-    res = r.analyze([8.0] * 99 + [0.06])  # 이상치 하나로 8000Hz 가 되거나 8ms 묶음으로 넘어가면 안 된다
-    assert res["cluster_n"] == 0 and res["hz_at_least"] is None
+def test_analyze_needs_50_usable_gaps():
+    res = r.analyze([4.0] * 49)
+    assert res["enough"] is False and res["hz"] is None and res["faster"] is False and res["r"] == {}
+    assert r.analyze([4.0] * 50)["hz"] == 250
+    # 1.5ms 미만(메시지 처리 지연)과 28ms 이상(자동 반복 31ms 대)은 표본이 아니다
+    res = r.analyze([0.3] * 100 + [31.0] * 100 + [4.0] * 49)
+    assert res["samples"] == 49 and res["enough"] is False
+    assert r.analyze([])["samples"] == 0
+
+
+def test_analyze_histogram_is_1ms_bins_up_to_16ms():
+    res = r.analyze([0.01, 0.3, 0.9, 1.0, 1.5, 3.99, 4.0, 15.99, 16.0, 31.0])
+    counts = [h["count"] for h in res["hist"]]
+    assert len(counts) == 16 and [h["label"] for h in res["hist"]][:2] == ["0~1", "1~2"]
+    assert counts[0] == 2 and counts[1] == 2 and counts[3] == 1 and counts[4] == 1 and counts[15] == 1
+    assert sum(counts) == 7  # 0.01ms(한 리포트 안의 이벤트)와 16ms 이상은 뺀다
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows 전용")

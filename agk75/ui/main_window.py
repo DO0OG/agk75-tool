@@ -29,7 +29,6 @@ class MainWindow(QMainWindow):
         i18n.set_lang(saved if saved in i18n.LANGS else i18n.system_lang())
         self.worker = Worker(on_exit=svc.close)
         svc.on_progress = lambda n, total: self.worker.call_ui(lambda: self._progress(n, total))
-        svc.on_step = lambda key: self.worker.call_ui(lambda: self._step(key))
         self.pages = {p.name: p for p in (KeysPage(self), LightPage(self), MagnetPage(self), MiscPage(self),
                                           BackupPage(self))}
         self.view = "keys"
@@ -153,9 +152,6 @@ class MainWindow(QMainWindow):
         page = self.pages["magnet"]
         page.progress(n, total)
 
-    def _step(self, key):
-        self.pages["keys"].rate_step(t(key))
-
     # ---------- 토스트·연결 ----------
     def toast(self, text, kind="ok", ms=2600):
         lb = QLabel(text)
@@ -222,8 +218,9 @@ class MainWindow(QMainWindow):
 
         def done(res, err):
             if self.report(res, err, t("toast.profile", n=layer + 1)):
-                self.s["profile"] = res["profile"]
+                self.s["profile"], self.s["rate"] = res["profile"], res["rate"]
                 self.paint()
+                self.pages["keys"].rate.refresh()
             self.draw_top()
         self.run(lambda: self.svc.profile(layer=layer), done)
 
@@ -322,6 +319,12 @@ class MainWindow(QMainWindow):
             self.s["profile"] = res["profile"]
             self.draw_top()
             self.paint()
+            self.run(self.svc.rate_read, self._on_rate, tag="rate")  # 프로필마다 폴링레이트가 따로다
+
+    def _on_rate(self, res, err):
+        if err is None and self.s is not None and res["profile"] == self.s["profile"]:
+            self.s["rate"] = res["rate"]
+            self.pages["keys"].rate.refresh()
 
     # ---------- 종료 ----------
     def closeEvent(self, e):

@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 
-from agk75 import i18n, protocol as P, ratectl
+from agk75 import i18n, protocol as P
 from agk75 import service as s
 
 from test_service import Fake, hub
@@ -16,7 +16,7 @@ def holes(text):
 
 def test_dictionaries_have_same_keys_and_placeholders():
     ko = i18n.MSG["ko"]
-    assert len(ko) > 250
+    assert len(ko) > 200
     for lang in ("en", "zh"):
         assert set(i18n.MSG[lang]) == set(ko), lang
         for key, text in i18n.MSG[lang].items():
@@ -55,38 +55,21 @@ def test_selected_language_translates_errors_for_every_thread():
     assert message() == "effect 必须是 0~255 之间的整数"
 
 
-def test_rate_errors_progress_and_restore_messages_are_translated(monkeypatch):
-    h = hub(None)
+def test_rate_errors_and_restore_messages_are_translated():
+    h = hub(Fake())
     i18n.set_lang("en")
     try:
-        h.rate_set(hz=3)
+        h.rate(hz=3)
     except ValueError as e:
-        assert s.describe_error(e) == "hz must be one of 8000, 4000, 2000, 1000"
-    assert i18n.t("rate.step.wait") == "Waiting for the device to reconnect…"
+        assert s.describe_error(e) == "hz must be one of 8000, 4000, 2000, 1000, 500, 250"
+    assert i18n.t("rate.ok", hz=250) == "Polling rate 250Hz applied (readback matches)"
     i18n.set_lang("zh")
-    assert i18n.t("rate.step.wait") == "正在等待设备重新连接…"
-
-    def boom(*a):
-        raise ratectl.RateError("rate.prepare_first")
-    monkeypatch.setattr(ratectl, "prepare", boom)
-    monkeypatch.setattr(ratectl, "driver_state", lambda: {})
-    try:
-        h.rate_prepare()
-    except ValueError as e:
-        assert s.describe_error(e) == "请先准备驱动"
-
-    i18n.set_lang("en")
-    monkeypatch.setattr(ratectl, "run_admin", lambda ops: {"ok": False, "ops": [], **ratectl._err("rate.admin_denied", code=5)})
-    monkeypatch.setattr(ratectl, "plan_set", lambda hz: [{"op": "restart"}])
-    monkeypatch.setattr(ratectl, "reread_usb", lambda: {"error": "usb.no_device"})
-    monkeypatch.setattr(ratectl, "admin_pending", lambda r: False)
-    r = h.rate_set(hz=4000)
-    assert r["message"].startswith("The administrator permission request was denied") and r["usb"]["error"] == "USB device not found"
-    assert "error_msg" not in r["admin"]
+    assert i18n.t("rate.ok", hz=250) == "已应用回报率 250Hz（回读一致）"
 
     err = P.RestoreError("restore.partial", stage=i18n.Msg("restore.stage.light"), done=[i18n.Msg("restore.stage.keymap")],
                          back=i18n.Msg("restore.back_ok"), cause=OSError("down"))
     assert "灯光" in i18n.render("zh", err.key, err.params) and "键位表" in i18n.render("zh", err.key, err.params)
+    assert i18n.render("en", "restore.stage.rate") == "Polling rate"
 
 
 def test_screen_code_uses_only_existing_keys():

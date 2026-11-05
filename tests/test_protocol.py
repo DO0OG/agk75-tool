@@ -57,8 +57,13 @@ def test_default_layout_names_complete():
 
 
 def test_dangerous_opcodes_not_allowed():
-    for op in (1, 2, 4, 12, 28, 30, 44, 127, 132, 172, 186):
+    for op in (1, 2, 12, 28, 30, 44, 127, 172, 186):
         assert op not in p.ALLOWED
+
+
+def test_rate_opcodes_allowed():
+    assert {p.G_RATE, p.S_RATE} == {132, 4} and {132, 4} <= p.ALLOWED
+    assert p.RATE_CODES == {8000: 0, 4000: 1, 2000: 2, 1000: 3, 500: 4, 250: 5}  # 코드 6 은 쓰지 않는다
 
 
 def test_send_rejects_disallowed_opcode_before_io():

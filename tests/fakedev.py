@@ -13,6 +13,7 @@ class FakeKeyboard:
         self.keymap = {l: bytes(keymap) for l in range(P.LAYERS)}
         self.fn = {l: bytes(4 * P.KEYS) for l in range(P.LAYERS)}
         self.profile, self.debounce, self.opts = 0, 3, bytearray([134, 0, 0, 0, 0])
+        self.rates = {l: 8000 for l in range(P.LAYERS)}
         self.light = P.light_expect(4, 2, 3, 1, (255, 90, 31))
         self.sidelight = P.light_expect(3, 2, 4, 1, (1, 2, 3), side=True)
         self.mag = {i: dict(travel=1.9, lift=1.9, dead=0.3, rt=False, rt_press=0.3, rt_lift=0.3) for i in range(P.KEYS)}
@@ -41,6 +42,9 @@ class FakeKeyboard:
 
     def get_debounce(self):
         return self.debounce
+
+    def get_rate(self, profile=0):
+        return self.rates[profile]
 
     def get_sleep(self):
         return [60, 300, 600, 1800]
@@ -78,6 +82,11 @@ class FakeKeyboard:
         self.writes.append(("debounce", ms))
         self.debounce = ms
         return ms
+
+    def set_rate(self, hz, profile=0):
+        self.writes.append(("rate", hz, profile))
+        self.rates[profile] = hz
+        return hz
 
     def set_options(self, **kw):
         self.writes.append(("options", kw))

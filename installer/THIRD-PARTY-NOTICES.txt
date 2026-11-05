@@ -18,8 +18,4 @@ AGK75 Tool - third-party software
 3. CPython and the Python standard library
    Python Software Foundation License.
 
-4. hidusbf (SweetLow)
-   Not included in this installer. It is downloaded only when you use the polling rate change feature
-   (public domain binaries, https://github.com/LordOfMice/hidusbf).
-
 AGK75 Tool itself is released under the MIT License (LICENSE).

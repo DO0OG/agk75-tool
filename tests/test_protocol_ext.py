@@ -83,6 +83,7 @@ class RecHid:
     def __init__(self, stuck=False):
         self.sent, self.last, self.profile, self.stuck, self.ret = [], b"", 0, stuck, 65
         self.mem, self.led = {}, {7: bytes(7), 8: bytes(7)}  # 청크로 쓴 행렬, 마지막 조명 SET
+        self.rate = {0: 0, 1: 0, 2: 0, 3: 0}  # 프로필별 폴링레이트 코드(처음은 8000Hz = 0)
 
     def send_feature_report(self, data):
         self.sent.append(bytes(data[1:]))
@@ -95,6 +96,8 @@ class RecHid:
             buf[k:k + 4] = self.last[8:12]
         if self.last[0] in (7, 8):
             self.led[self.last[0]] = self.last[1:8]
+        if self.last[0] == 4:
+            self.rate[self.last[1]] = self.last[2]
         if self.last[0] == 5 and not self.stuck:
             self.profile = self.last[1] // 4
         return self.ret
@@ -106,6 +109,8 @@ class RecHid:
             return b"\0" + bytes(buf[self.last[2] * 64:][:64])
         if op in (135, 136):  # 조명: 마지막으로 쓴 값을 되돌려 준다
             return b"\0" + bytes([op]) + self.led[op - 128] + bytes(56)
+        if op == 132:  # 폴링레이트: byte 2 가 코드
+            return b"\0" + bytes([op, 0, self.rate[self.last[1]]]) + bytes(61)
         return b"\0" + bytes([op, self.profile * 4]) + bytes(62)
 
     def close(self):
@@ -143,6 +148,60 @@ def test_device_setters_validate_before_any_write():
         with pytest.raises(ValueError):
             f()
     assert dev.dev.sent == []  # 검증에서 막혀 장치에는 아무것도 가지 않았다
+
+
+def test_rate_set_get_and_validation():
+    dev = fake_device()
+    assert dev.get_rate(0) == 8000
+    assert dev.set_rate(250, 2) == 250 and dev.get_rate(2) == 250 and dev.get_rate(0) == 8000
+    assert writes(dev) == [bytes([4, 2, 5, 0, 0, 0, 0, 255 - (4 + 2 + 5)]) + bytes(56)]  # 체크섬은 byte 7
+    for hz in (7000, 125, 0, True, 1000.0, "1000", None):
+        with pytest.raises(ValueError):
+            dev.set_rate(hz)
+    for pr in (-1, 4):
+        with pytest.raises(ValueError):
+            dev.set_rate(1000, pr)
+        with pytest.raises(ValueError):
+            dev.get_rate(pr)
+    assert len(writes(dev)) == 1  # 검사에서 막혀 더 쓰지 않았다
+    dev.dev.rate[0] = 6  # 표 밖 코드(125Hz 가 아니다)는 읽어도 값이 없다
+    assert dev.get_rate(0) is None
+
+
+class _Pin(dict):
+    def __setitem__(self, key, value):
+        pass
+
+
+def test_rate_set_returns_last_read_when_not_applied():
+    dev = fake_device()
+    dev.dev.rate = _Pin({0: 0})
+    assert dev.set_rate(1000, 0) == 8000  # 장치가 값을 바꾸지 않으면 되읽은 값을 돌려준다
+
+
+def test_dump_and_restore_include_rate_per_profile():
+    dev = fake_device()
+    dev.dev.rate.update({1: 3, 2: 4, 3: 6})
+    d = p.dump(dev)
+    assert d["rate"] == {0: 8000, 1: 1000, 2: 500, 3: None}
+    b = sample_backup()
+    b["rate"] = {"0": 250, "1": 1000, "2": None, "3": 125}  # 같은 값·없는 값·표 밖 값은 쓰지 않는다
+    dev = fake_device()
+    dev.dev.rate[1] = 3
+    assert p.restore(dev, b) == []
+    assert [x for x in writes(dev) if x[0] == 4] == [bytes([4, 0, 5, 0, 0, 0, 0, 246]) + bytes(56)]
+    assert [x[0] for x in writes(dev)][-2:] == [4, 5]  # 폴링레이트 다음에 프로필 선택
+    def rate_diff(want):  # 가짜 장치는 다른 항목을 저장하지 않으므로 폴링레이트 항목만 본다
+        return [x for x in p.diff_backup(want, p.dump(dev)) if x.startswith("rate")]
+    assert rate_diff(b) == []
+    b["rate"]["0"] = 500
+    assert rate_diff(b) == ["rate.0"]
+    assert rate_diff(sample_backup()) == []  # 옛 백업은 폴링레이트를 비교하지 않는다
+    for bad in ({"9": 1000}, {"0": "fast"}, [1000]):
+        fresh = fake_device()
+        with pytest.raises(ValueError):
+            p.restore(fresh, {**sample_backup(), "rate": bad})
+        assert fresh.dev.sent == []
 
 
 def test_set_sidelight_sends_side_report():

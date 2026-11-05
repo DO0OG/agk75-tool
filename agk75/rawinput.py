@@ -2,21 +2,20 @@
 
 키 입력 내용(VKey, 스캔코드)은 읽지도 저장하지도 않는다. 측정 중에만 숨은 메시지 전용 창이 있다.
 """
-import bisect
 import ctypes
 import math
-import statistics
 import threading
 import time
 from ctypes import wintypes
 
 from .i18n import MsgError
 
-RATES = (125, 250, 500, 1000, 2000, 4000, 8000)
-EDGES_MS = (0.125, 0.25, 0.5, 1.0, 2.0)
-LABELS = ("<0.125", "0.125~0.25", "0.25~0.5", "0.5~1", "1~2", ">=2")
+PERIODS_MS = ((4, 250), (2, 500), (1, 1000))  # 큰 주기부터 본다(4ms 배수는 2ms·1ms 에서도 높게 나온다)
+GAP_MIN_MS, GAP_MAX_MS = 1.5, 28.0  # 이 범위 밖: 한 리포트의 연속 이벤트·메시지 지연, 자동 반복(31ms 대)
+R_MIN = 0.35
 MIN_SAMPLES = 50
-SAME_REPORT_MS = 0.05  # 이보다 짧은 간격은 한 리포트에 든 이벤트로 보고 버린다
+HIST_MS = 16
+SAME_REPORT_MS = 0.05  # 이보다 짧은 간격은 한 리포트에 든 이벤트로 보고 히스토그램에서 뺀다
 NEEDLE = "VID_3151&PID_5009"
 
 WM_INPUT, HWND_MESSAGE = 0x00FF, -3
@@ -25,36 +24,28 @@ RIDEV_REMOVE, RIDEV_INPUTSINK = 0x1, 0x100
 QS_ALLINPUT, PM_REMOVE = 0x04FF, 1
 
 
-def _cluster(xs):
-    """오름차순 xs 에서 가장 짧은 간격 묶음(최소값의 1.5배 이내, 3개 이상)을 찾는다. 최대 3회."""
-    start = 0
-    for _ in range(3):
-        if start >= len(xs) or xs[start] > 3 * xs[0]:  # 먼 값으로 건너뛰면 이상치 하나로 판정이 갈린다
-            return None
-        group = [x for x in xs[start:] if x <= xs[start] * 1.5]
-        if len(group) >= 3:
-            return group
-        start += len(group)
-    return None
+def _rayleigh(gaps, period):
+    w = 2 * math.pi / period
+    return math.hypot(sum(math.cos(w * g) for g in gaps), sum(math.sin(w * g) for g in gaps)) / len(gaps)
 
 
 def analyze(intervals_ms):
-    """이벤트 간격(ms) 목록 -> 최소 간격, 히스토그램, 가장 짧은 간격 묶음 기준 폴링레이트 하한·추정치."""
-    xs = sorted(x for x in intervals_ms if x >= SAME_REPORT_MS)
-    n = len(xs)
-    counts = [0] * len(LABELS)
-    for x in xs:
-        counts[bisect.bisect_right(EDGES_MS, x)] += 1
-    out = {"samples": n, "enough": n >= MIN_SAMPLES, "min_ms": xs[0] if xs else None,
-           "hist": [{"label": l, "count": c} for l, c in zip(LABELS, counts)], "hz_at_least": None,
-           "hz_estimate": None, "cluster_ms": None, "cluster_n": 0, "note": "measure.note"}
-    group = _cluster(xs) if out["enough"] else None
-    if group:
-        rep = statistics.median(group)
-        # 대표값이 어느 주기보다 짧으면 그 레이트는 배제. 주기가 대표값 이하인 가장 낮은 레이트가 하한 (지터 10% 허용)
-        out.update(cluster_ms=rep, cluster_n=len(group),
-                   hz_at_least=next((r for r in RATES if 1000 / r <= rep * 1.1), RATES[-1]),
-                   hz_estimate=min(RATES, key=lambda r: abs(math.log(r * rep / 1000))))
+    """이벤트 간격(ms) 목록 -> 간격이 4·2·1ms 주기에 몰리는 정도(Rayleigh R)로 250/500/1000Hz 를 판정한다.
+
+    판정 근거는 주기성뿐이다. 1000Hz 보다 빠른 구간(2000~8000Hz)은 PC 쪽 측정으로 구분되지 않는다.
+    """
+    counts = [0] * HIST_MS
+    for x in intervals_ms:
+        if SAME_REPORT_MS <= x < HIST_MS:
+            counts[int(x)] += 1
+    gaps = [x for x in intervals_ms if GAP_MIN_MS <= x < GAP_MAX_MS]
+    n = len(gaps)
+    out = {"samples": n, "enough": n >= MIN_SAMPLES, "r": {}, "hz": None, "faster": False,
+           "hist": [{"label": "%d~%d" % (i, i + 1), "count": c} for i, c in enumerate(counts)]}
+    if out["enough"]:
+        out["r"] = {p: _rayleigh(gaps, p) for p, _ in PERIODS_MS}
+        out["hz"] = next((hz for p, hz in PERIODS_MS if out["r"][p] >= R_MIN), None)
+        out["faster"] = out["hz"] is None
     return out
 
 

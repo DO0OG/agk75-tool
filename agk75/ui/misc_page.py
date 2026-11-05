@@ -1,4 +1,4 @@
-"""성능·기타: 디바운스, 절전 표시, 장치 옵션, USB 협상값, 폴링레이트 실측, 고정 정보."""
+"""성능·기타: 디바운스, 절전 표시, 장치 옵션, 폴링레이트 실측, 고정 정보."""
 import math
 
 from PySide6.QtCore import QTimer
@@ -31,7 +31,7 @@ class MiscPage(Page):
         self.timer = QTimer()
         self.timer.setInterval(500)
         self.timer.timeout.connect(self.measure_tick)
-        self.deb = self.deb_state = self.optbox = self.usb_lbl = self.mres = self.mbar = self.mstart = None
+        self.deb = self.deb_state = self.optbox = self.mres = self.mbar = self.mstart = None
 
     def leave(self):
         self.timer.stop()
@@ -65,7 +65,6 @@ class MiscPage(Page):
             box.addStretch(1)
             cols.addLayout(box, 1)
         self.lay.addLayout(cols)
-        self.usb_refresh()
         self.measure_tick()
 
     # ---------- 카드 ----------
@@ -101,9 +100,6 @@ class MiscPage(Page):
             lay.addWidget(r)
 
     def _measure(self):
-        self.usb_lbl = bold(t("usb.reading"))
-        refresh = button(t("misc.refresh"))
-        refresh.clicked.connect(self.usb_refresh)
         self.mstart = button(t("misc.start"), primary=True)
         self.mstart.clicked.connect(self.measure_start)
         self.mbar = QProgressBar()
@@ -111,9 +107,8 @@ class MiscPage(Page):
         self.mbar.setTextVisible(False)
         self.mres = QWidget()
         QVBoxLayout(self.mres).setContentsMargins(0, 0, 0, 0)
-        return self._card(sub(t("misc.measure")), row(self.usb_lbl, refresh), sub(t("misc.usb_note")),
-                          row(self.mstart, stretch=True), sub(t("misc.measure_note")), self.mbar, self.mres,
-                          sub(t("misc.rate_hint")))[0]
+        return self._card(sub(t("misc.measure")), row(self.mstart, stretch=True), sub(t("misc.measure_note")),
+                          self.mbar, self.mres, sub(t("misc.rate_hint")))[0]
 
     # ---------- 동작 ----------
     def apply_debounce(self):
@@ -147,20 +142,6 @@ class MiscPage(Page):
                 self.draw_options()
         self.win.run(lambda: self.win.svc.options(**{k: not o[k]}), done)
 
-    def usb_refresh(self):
-        self.usb_lbl.setText(t("usb.reading"))
-
-        def done(j, err):
-            if not alive(self.usb_lbl):
-                return
-            if err is not None:
-                self.usb_lbl.setText(describe_error(err))
-            elif j.get("error"):
-                self.usb_lbl.setText(j["error"])
-            else:
-                self.usb_lbl.setText(t("usb.result", us=j["poll_us"], hz=j["max_hz"], speed=j["speed"]))
-        self.win.run(self.win.svc.usbinfo, done)
-
     # ---------- 측정 ----------
     def measure_start(self):
         def done(j, err):
@@ -169,7 +150,7 @@ class MiscPage(Page):
             if alive(self.mres):
                 self.timer.start()
                 self.measure_tick()
-        self.win.run(lambda: self.win.svc.measure_start(seconds=10), done)
+        self.win.run(lambda: self.win.svc.measure_start(seconds=15), done)
 
     def measure_tick(self):
         def done(j, err):
@@ -203,18 +184,14 @@ class MiscPage(Page):
         r = j["result"]
         if not r:
             return
-        if r["min_ms"] is None:
-            return line(t("measure.noevents"), "bad")
-        if r["hz_at_least"]:
-            lay.addWidget(bold(t("measure.summary", atleast=r["hz_at_least"], est=r["hz_estimate"], n=r["cluster_n"],
-                                 ms="%.3f" % r["cluster_ms"])))
-            if r["cluster_n"] < 10:
-                line(t("measure.rough"))
+        if r["hz"]:
+            lay.addWidget(bold(t("measure.hz", hz=r["hz"])))
+        elif r["faster"]:
+            lay.addWidget(bold(t("measure.faster")))
         else:
-            lay.addWidget(bold(t("measure.insufficient")))
-        line(r["note"])
-        line(t("measure.mininfo", min="%.3f" % r["min_ms"], samples=r["samples"]) +
-             ("" if r["enough"] else t("measure.notenough")))
+            lay.addWidget(bold(t("measure.insufficient", n=r["samples"])))
+        if r["enough"]:
+            line(t("measure.detail", n=r["samples"], **{"r%d" % p: "%.2f" % v for p, v in r["r"].items()}))
         top = max(1, *(h["count"] for h in r["hist"]))
         grid = QGridLayout()
         grid.setHorizontalSpacing(8)

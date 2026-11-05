@@ -97,7 +97,6 @@ class KeysPage(Page):
         QVBoxLayout(self.kedit).setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self.kedit)
         self.editor()
-        self.rate.load()
 
     def _set_layer(self, v):
         self.layer = v
@@ -106,9 +105,6 @@ class KeysPage(Page):
     def _set_kind(self, v):
         self.fn = v
         self.win.render()
-
-    def rate_step(self, text):
-        self.rate.on_step(text)
 
     def editor(self):
         if not alive(self.kedit) or self.s is None:

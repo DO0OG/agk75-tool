@@ -9,7 +9,7 @@ class Fake:
     """장치 대신 쓰는 가짜 객체: 쓴 값을 그대로(또는 일부러 다르게) 돌려준다."""
 
     def __init__(self, drift=False):
-        self.drift, self.keys, self.mag = drift, {}, {}
+        self.drift, self.keys, self.mag, self.rate = drift, {}, {}, {}
 
     def set_key(self, layer, idx, item):
         self.keys[(layer, idx)] = bytes(item)
@@ -41,6 +41,13 @@ class Fake:
 
     def get_profile(self):
         return 2
+
+    def get_rate(self, profile=0):
+        return self.rate.get(profile, 8000)
+
+    def set_rate(self, hz, profile=0):
+        self.rate[profile] = hz if not self.drift else 8000
+        return self.rate[profile]
 
     def close(self):
         pass
@@ -87,7 +94,7 @@ def test_light_magnet_and_sidelight():
 
 def test_profile_write_checks_range():
     h = hub(Fake())
-    assert h.profile(layer=3) == {"applied": True, "profile": 3}
+    assert h.profile(layer=3) == {"applied": True, "profile": 3, "rate": 8000}
     with pytest.raises(ValueError):
         h.profile(layer=4)
 
@@ -135,6 +142,24 @@ def test_hub_serializes_device_access():
     h.lock.release()
     t.join(2)
     assert got and got[0]["applied"] is True
+
+
+def test_rate_write_confirmed_by_readback_and_validated():
+    dev = Fake()
+    r = hub(dev).rate(hz=500)
+    assert r == {"applied": True, "profile": 2, "rate": 500} and dev.rate == {2: 500}  # 현재 프로필(2)에 쓴다
+    assert hub(Fake(drift=True)).rate(hz=500) == {"applied": False, "profile": 2, "rate": 8000}
+    dev = Fake()
+    for bad in (125, 0, 3000, True, "1000", None, 1000.5, 100001):
+        with pytest.raises(ValueError):
+            hub(dev).rate(hz=bad)
+    with pytest.raises(ValueError):
+        hub(dev).rate()
+    assert dev.rate == {}  # 검사에서 막혀 장치에는 쓰지 않았다
+    assert s.describe_error(pytest.raises(ValueError, hub(dev).rate, hz=3).value) == "hz 는 8000, 4000, 2000, 1000, 500, 250 중 하나여야 합니다"
+    assert hub(Fake()).rate_read() == {"profile": 2, "rate": 8000}
+    r = hub(Fake()).profile(layer=2)
+    assert r["applied"] is True and r["rate"] == 8000  # 프로필을 바꾼 뒤 그 프로필의 값을 함께 돌려준다
 
 
 def test_poll_reports_connection_and_profile():

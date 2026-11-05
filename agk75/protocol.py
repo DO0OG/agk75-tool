@@ -12,13 +12,17 @@ USAGE_PAGE, USAGE = 0xFFFF, 0x0002
 
 # GET
 G_REV, G_PROFILE, G_OPTION, G_LED, G_SLED, G_KEYMATRIX = 128, 133, 134, 135, 136, 137
-G_ID, G_FN, G_DEBOUNCE, G_SLEEP, G_MAGNET = 143, 144, 145, 146, 229
+G_ID, G_FN, G_DEBOUNCE, G_SLEEP, G_MAGNET, G_RATE = 143, 144, 145, 146, 229, 132
 # SET
 S_PROFILE, S_OPTION, S_LED, S_SLED, S_DEBOUNCE, S_KEY, S_FN, S_MAGNET = 5, 6, 7, 8, 17, 19, 21, 101
 S_KEYMATRIX, S_FNMATRIX = 9, 16  # 복원 때만 쓰는 전체 키맵/Fn 청크 쓰기
+S_RATE = 4
 ALLOWED = {G_REV, G_PROFILE, G_OPTION, G_LED, G_SLED, G_KEYMATRIX, G_ID, G_FN, G_DEBOUNCE,
-           G_SLEEP, G_MAGNET, S_PROFILE, S_OPTION, S_LED, S_SLED, S_DEBOUNCE, S_KEY, S_FN, S_MAGNET,
-           S_KEYMATRIX, S_FNMATRIX}
+           G_SLEEP, G_MAGNET, G_RATE, S_PROFILE, S_OPTION, S_LED, S_SLED, S_DEBOUNCE, S_KEY, S_FN, S_MAGNET,
+           S_KEYMATRIX, S_FNMATRIX, S_RATE}
+# 폴링레이트 레지스터 값. 코드 6 은 주기가 없어 쓰지 않는다. 레지스터는 범위 밖 값도 저장하므로 쓰기 전에 검사한다.
+# 2000·4000·8000Hz 는 1000Hz 보다 빠르다는 것만 확인했고 값 자체는 추정이다.
+RATE_CODES = {8000: 0, 4000: 1, 2000: 2, 1000: 3, 500: 4, 250: 5}
 
 EFFECTS = {0: "Off", 1: "AlwaysOn", 2: "Breath", 3: "Neon", 4: "Wave", 5: "Ripple",
            6: "Raindrop", 7: "Snake", 8: "Press", 9: "Converge", 10: "SineWave",
@@ -289,6 +293,20 @@ class Device:
         self.send(bytes([S_DEBOUNCE, 0, ms]), wait=0.3)
         return self.get_debounce()
 
+    def get_rate(self, profile=0):
+        """프로필의 폴링레이트(Hz). 코드가 표 밖이면 None."""
+        check_int("profile", profile, 0, LAYERS - 1)
+        r = self.get(G_RATE, profile)
+        return next((hz for hz, c in RATE_CODES.items() if r and c == r[2]), None)
+
+    def set_rate(self, hz, profile=0):
+        """폴링레이트를 쓰고 반영될 때까지 되읽어 마지막으로 읽은 값(Hz)을 돌려준다."""
+        if type(hz) is not int or hz not in RATE_CODES:
+            raise MsgError("err.hz_choice", list=sorted(RATE_CODES, reverse=True))
+        check_int("profile", profile, 0, LAYERS - 1)
+        self.send(bytes([S_RATE, profile, RATE_CODES[hz]]), wait=0.3)
+        return self._settle(lambda: self.get_rate(profile), hz)
+
     def get_sleep(self):
         r = self.get(G_SLEEP)
         return [r[i + 1] | r[i + 2] << 8 for i in (0, 2, 4, 6)] if r else None
@@ -513,7 +531,8 @@ def dump(dev, all_profiles=False):
         mag = {cur: magnet()}
     out = {"version": 2, "device_id": dev.device_id(), "revision": dev.revision(), "profile": cur,
            "debounce": dev.get_debounce(), "sleep": dev.get_sleep(),
-           "options": list(dev.get_options() or []), "light": dev.get_light(),
+           "options": list(dev.get_options() or []), "rate": {l: dev.get_rate(l) for l in range(LAYERS)},
+           "light": dev.get_light(),
            "sidelight": dev.get_sidelight(),
            "keymatrix": {l: {s: dev.get_keymatrix(l, s).hex() for s in range(4)} for l in range(LAYERS)},
            "fn": {l: dev.get_fn(l).hex() for l in range(LAYERS)}, "magnet": mag}
@@ -550,6 +569,10 @@ def _check_backup(b):
             d = b.get(name)
             if d and d["effect"] in effects:  # 표에 없는 효과는 restore 가 건너뛴다
                 check_light(d["effect"], d["speed"], d["bright"], d["option"], d["rgb"], effects)
+        for pr, hz in b.get("rate", {}).items():  # 없으면 옛 백업. 표 밖 값은 restore 가 건너뛴다
+            check_int("rate profile", int(pr), 0, LAYERS - 1)
+            if hz is not None:
+                check_int("rate", hz, 0, 1 << 31)
         if len(b["options"]) != 5:
             raise MsgError("restore.options")
         for v in b["options"]:
@@ -567,7 +590,7 @@ class RestoreError(Msg, OSError):
 def restore(dev, backup):
     """백업(dump 결과 또는 그 JSON)을 장치에 쓴다. 건너뛴 항목 목록을 돌려준다. 실기기 쓰기가 많다.
 
-    순서: 키맵 -> Fn -> 자기 축(프로필별) -> 조명 -> 측면 조명 -> 옵션 -> 디바운스 -> 백업 때의 프로필 선택.
+    순서: 키맵 -> Fn -> 자기 축(프로필별) -> 조명 -> 측면 조명 -> 옵션 -> 디바운스 -> 폴링레이트 -> 백업 때의 프로필 선택.
     쓰기 중 실패하면 복원 전 프로필로 되돌리기를 시도한 뒤 RestoreError 를 올린다(검증 오류는 ValueError 그대로).
     """
     b = _legacy_keys(json.loads(json.dumps(backup)))  # 키를 문자열로 통일
@@ -575,7 +598,7 @@ def restore(dev, backup):
     orig, stage, done, skipped = dev.get_profile(), "", [], []
     try:
         for stage, step in (("keymap", _restore_keymap), ("fn", _restore_fn), ("magnet", _restore_magnet),
-                            ("light", _restore_lights), ("options", _restore_options)):
+                            ("light", _restore_lights), ("options", _restore_options), ("rate", _restore_rate)):
             r = step(dev, b)
             skipped += r or []
             done.append(stage)
@@ -635,6 +658,12 @@ def _restore_options(dev, b):
         dev.set_debounce(b["debounce"])
 
 
+def _restore_rate(dev, b):
+    for pr, hz in sorted(b.get("rate", {}).items()):
+        if hz in RATE_CODES and dev.get_rate(int(pr)) != hz and dev.set_rate(hz, int(pr)) != hz:
+            raise OSError("Polling rate of profile %s was not applied" % pr)
+
+
 def diff_backup(want, got):
     """복원 결과 비교: want(백업)와 got(복원 뒤 되읽은 dump)에서 다른 항목 이름 목록."""
     want, got = _legacy_keys(json.loads(json.dumps(want))), json.loads(json.dumps(got))
@@ -656,5 +685,7 @@ def diff_backup(want, got):
 
     for k in ("profile", "debounce", "light", "sidelight", "keymatrix", "fn", "magnet"):
         walk(k, want.get(k), got.get(k))
+    if want.get("rate"):  # 옛 백업에는 없다. 복원하지 않는 값(None, 표 밖)은 비교하지 않는다
+        walk("rate", {k: v for k, v in want["rate"].items() if v in RATE_CODES}, got.get("rate") or {})
     leaf("options", want["options"][1:4], got["options"][1:4])
     return out

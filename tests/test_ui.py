@@ -9,9 +9,9 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QSettings  # noqa: E402
-from PySide6.QtWidgets import QLabel  # noqa: E402
+from PySide6.QtWidgets import QFrame, QLabel  # noqa: E402
 
-from agk75 import i18n, ratectl, usbinfo  # noqa: E402
+from agk75 import i18n  # noqa: E402
 from agk75 import service as s  # noqa: E402
 from agk75.ui import keys_page  # noqa: E402
 from agk75.ui.app import make_app  # noqa: E402
@@ -39,11 +39,7 @@ def toasts(win):
 
 
 @pytest.fixture
-def env(tmp_path, monkeypatch):
-    monkeypatch.setattr(usbinfo, "read", lambda: {"poll_us": 125, "max_hz": 8000, "speed": "High"})
-    monkeypatch.setattr(ratectl, "driver_state", lambda: {
-        "device": "USB\\X", "device_error": None, "service": True, "sys": True, "filter": False, "binterval": None,
-        "configured_hz": None, "hvci": False, "secure_boot": True, "package": True})
+def env(tmp_path):
     app = make_app()
     dev = FakeKeyboard()
     state = {"plugged": True}
@@ -179,7 +175,7 @@ def test_close_stops_worker_and_closes_device(env):
     assert win.worker.isFinished() and dev.closed  # 장치는 작업 스레드가 닫는다
 
 
-def test_close_asks_for_confirmation_while_restore_or_admin_job_runs(env):
+def test_close_asks_for_confirmation_while_restore_job_runs(env):
     app, win, dev, _ = env
     win.long_start()
     win.confirm = lambda text: False
@@ -203,19 +199,38 @@ def test_restore_runs_on_worker_and_reports_result(env, monkeypatch):
     assert pump(app, lambda: page.state_lbl.text() == i18n.t("backup.verified"))
 
 
-def test_rate_card_applies_through_worker_and_shows_reboot_notice(env, monkeypatch):
+def test_rate_card_shows_current_value_and_applies_through_worker(env):
     app, win, dev, _ = env
-    got = []
-    monkeypatch.setattr(win.svc, "rate_set", lambda **kw: got.append(kw) or {
-        "applied": True, "requested": kw["hz"], "message": "", "reboot_needed": True, "usb": {}, "verified": None})
     win.show_view("keys")
     card = win.pages["keys"].rate
-    assert pump(app, lambda: card.state is not None)
-    card.apply(4000)
-    assert pump(app, lambda: got and not card.busy)
-    assert got == [{"hz": 4000}] and card.res == i18n.t("rate.res.reboot") and card.cls == "bad"
+    seg = next(w for w in card.frame.findChildren(QFrame) if w.property("seg"))
+    assert list(seg.buttons) == [8000, 4000, 2000, 1000, 500, 250] and seg.buttons[8000].isChecked()
     texts = [w.text() for w in card.frame.findChildren(QLabel)]
-    assert any(i18n.t("rate.table_warn") == x for x in texts)
+    assert i18n.t("rate.note") in texts and i18n.t("rate.cur", n=1, hz=8000) in texts
+    assert not any(re.search(r"드라이버|재부팅|안티치트", x) for x in texts)
+    card.apply(500)
+    assert pump(app, lambda: ("rate", 500, 0) in dev.writes and not card.busy)
+    assert win.s["rate"] == 500 and threading.get_ident() not in dev.threads  # 작업 스레드에서 썼다
+    assert i18n.t("rate.ok", hz=500) in toasts(win)
+    seg = next(w for w in card.frame.findChildren(QFrame) if w.property("seg"))
+    assert seg.buttons[500].isChecked()
+
+
+def test_rate_card_reports_mismatch_and_profile_switch_refreshes_value(env, monkeypatch):
+    app, win, dev, _ = env
+    win.show_view("keys")
+    card = win.pages["keys"].rate
+    monkeypatch.setattr(dev, "set_rate", lambda hz, profile=0: 8000)
+    card.apply(250)
+    assert pump(app, lambda: not card.busy and win.s["rate"] == 8000)
+    assert any(i18n.t("rate.mismatch", want=250, got=8000) == x for x in toasts(win))
+    dev.rates[1] = 1000
+    win._set_profile(1)
+    assert pump(app, lambda: win.s["profile"] == 1 and win.s["rate"] == 1000)
+    assert i18n.t("rate.cur", n=2, hz=1000) in [w.text() for w in card.frame.findChildren(QLabel)]
+    dev.profile, dev.rates[3] = 3, 250  # 키보드에서 직접 프로필을 바꾼 경우(폴링)
+    win._poll()
+    assert pump(app, lambda: win.s["profile"] == 3 and win.s["rate"] == 250)
 
 
 def test_key_press_mapping_uses_physical_scan_codes():
